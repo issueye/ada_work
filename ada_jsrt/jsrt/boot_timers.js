@@ -10,6 +10,9 @@ const pending = new Set();
 globalThis.__adaPendingTimers = pending;
 
 function track(handle) {
+  // 常驻模式下定时器跨调用存活，记账既没有清理时机也会无限增长；
+  // 直接返回原始句柄。
+  if (globalThis.__adaResident === true) return handle;
   if (handle !== null && handle !== undefined) pending.add(handle);
   return handle;
 }

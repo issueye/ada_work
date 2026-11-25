@@ -108,9 +108,9 @@ v2 把「插件」从**被调用的函数袋**升级成**可编排的作用域�
 | [adr/0009](docs/adr/0009-rpc-json-budget.md) | ADR:rpc-json 单插件预算例外(已接受) |
 | [adr/0010](docs/adr/0010-session-jsonl-budget.md) | ADR:session-jsonl 单插件预算例外(已接受) |
 | [adr/0013](docs/adr/0013-tool-plugin-budget-exception.md) | ADR:memory-helper / http-helper 预算例外(复议 2027-06-30) |
-| [adr/0014](docs/adr/0014-call-scoped-event-loop.md) | ADR:执行层事件循环按调用边界驱动(已接受,复议 2027-03-31) |
+| [adr/0014](docs/adr/0014-call-scoped-event-loop.md) | ADR:执行层事件循环按调用边界驱动(已修订 2026-11-26,新增 LoopResident;复议 2027-03-31) |
 | [adr/0015](docs/adr/0015-refused-node-modules.md) | ADR:不实现 worker_threads / inspector / async_hooks / trace_events(复议 2027-06-30) |
-| [adr/0016](docs/adr/0016-no-fs-watch.md) | ADR:不实现 fs.watch / fs.watchFile(复议 2027-06-30) |
+| [adr/0016](docs/adr/0016-no-fs-watch.md) | ADR:fs.watch/watchFile 的实现边界(已修订 2026-11-26,LoopResident 下轮询;复议 2027-06-30) |
 | [seam-rpc.md](docs/seam-rpc.md) | RPC 通讯:P0–P4(TLS) 已实现(tcp/unix/pipe、帧/握手/取消、rpc-guard/observe、tls://) |
 | [node-compat.md](docs/node-compat.md) | Node 内置模块兼容层:node:fs/path/os/events/util 等 |
 | [seam-secrets.md](docs/seam-secrets.md) | M5 secret 能力:seam/secrets 与 provider/secrets-env |

@@ -1,6 +1,6 @@
 package jsrt
 
-// 本文件是 node:zlib 的宿主能力:同步压缩与解压。
+// 本文件是 node:zlib 的宿主能力:同步压缩/解压与流式 zlib 句柄。
 //
 // 放在执行层的理由与 node:crypto 一致:纯计算,没有策略语义(不读文件、
 // 不发请求、不改进程状态),因此默认可用;`node:zlib` 模块只负责把它包成
@@ -10,14 +10,17 @@ package jsrt
 // 不设上限就等于把一个 zip bomb 交给插件,而且它会在 JS 的 heap 里展开。
 
 import (
+	"bufio"
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
 	"compress/zlib"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	"github.com/MoeForge/moejs"
 	"github.com/MoeForge/moejs/engine"
@@ -148,4 +151,318 @@ func zlibUnpack(op string, rd io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("zlib %s 解压结果超过上限 %d 字节", op, maxZlibOutBytes)
 	}
 	return out, nil
+}
+
+// —— 流式 zlib ——
+//
+// 压缩端用 gzip/zlib/flate Writer + Flush：每次写入后取走已产生的字节。
+// 解压端用 io.Pipe + 后台 reader goroutine：写入压缩块，读取当前已解出的字节；
+// End 关闭管道并取剩余输出。总输出超过 maxZlibOutBytes 时立即失败。
+
+type zlibStream struct {
+	op     string
+	writer interface {
+		io.WriteCloser
+		Flush() error
+	}
+	buf bytes.Buffer
+
+	pw   *io.PipeWriter
+	done chan struct{}
+
+	outMu    sync.Mutex
+	out      bytes.Buffer
+	err      error
+	outTotal int64
+	maxOut   int64
+	closed   bool
+}
+
+func newZlibStream(op string, maxOut int64) (*zlibStream, error) {
+	switch op {
+	case "gzip", "deflate", "deflateRaw":
+		s := &zlibStream{op: op, maxOut: maxOut}
+		switch op {
+		case "gzip":
+			s.writer = gzip.NewWriter(&s.buf)
+		case "deflate":
+			s.writer = zlib.NewWriter(&s.buf)
+		case "deflateRaw":
+			w, err := flate.NewWriter(&s.buf, flate.DefaultCompression)
+			if err != nil {
+				return nil, err
+			}
+			s.writer = w
+		}
+		return s, nil
+	case "gunzip", "inflate", "inflateRaw", "unzip":
+		return newZlibReaderStream(op, maxOut)
+	}
+	return nil, fmt.Errorf("不支持的 zlib 操作: %s", op)
+}
+
+func newZlibReaderStream(op string, maxOut int64) (*zlibStream, error) {
+	pr, pw := io.Pipe()
+	s := &zlibStream{op: op, pw: pw, done: make(chan struct{}), maxOut: maxOut}
+	go func() {
+		defer close(s.done)
+		var reader io.Reader
+		var err error
+		switch op {
+		case "gunzip":
+			reader, err = gzip.NewReader(pr)
+		case "inflate":
+			reader, err = zlib.NewReader(pr)
+		case "inflateRaw":
+			reader = flate.NewReader(pr)
+		case "unzip":
+			br := bufio.NewReader(pr)
+			magic, peekErr := br.Peek(2)
+			if peekErr != nil && len(magic) < 2 {
+				s.setErr(peekErr)
+				_ = pw.CloseWithError(peekErr)
+				return
+			}
+			if magic[0] == 0x1f && magic[1] == 0x8b {
+				reader, err = gzip.NewReader(br)
+			} else {
+				reader, err = zlib.NewReader(br)
+			}
+		}
+		if err != nil {
+			s.setErr(err)
+			_ = pw.CloseWithError(err)
+			return
+		}
+		if closer, ok := reader.(io.Closer); ok {
+			defer func() { _ = closer.Close() }()
+		}
+		buf := make([]byte, 32<<10)
+		for {
+			n, readErr := reader.Read(buf)
+			if n > 0 {
+				if appendErr := s.appendOut(buf[:n]); appendErr != nil {
+					s.setErr(appendErr)
+					_ = pw.CloseWithError(appendErr)
+					return
+				}
+			}
+			if readErr == io.EOF {
+				return
+			}
+			if readErr != nil {
+				if !errors.Is(readErr, io.ErrUnexpectedEOF) {
+					s.setErr(readErr)
+				}
+				return
+			}
+		}
+	}()
+	return s, nil
+}
+
+func (s *zlibStream) setErr(err error) {
+	s.outMu.Lock()
+	if s.err == nil {
+		s.err = err
+	}
+	s.outMu.Unlock()
+}
+
+func (s *zlibStream) appendOut(data []byte) error {
+	s.outMu.Lock()
+	defer s.outMu.Unlock()
+	if s.maxOut > 0 && s.outTotal+int64(len(data)) > s.maxOut {
+		return fmt.Errorf("zlib 输出超过上限 %d", s.maxOut)
+	}
+	s.outTotal += int64(len(data))
+	_, err := s.out.Write(data)
+	return err
+}
+
+func (s *zlibStream) takeOut() ([]byte, error) {
+	s.outMu.Lock()
+	defer s.outMu.Unlock()
+	out := append([]byte(nil), s.out.Bytes()...)
+	s.out.Reset()
+	return out, s.err
+}
+
+func (s *zlibStream) write(input []byte) ([]byte, error) {
+	if s.writer != nil {
+		if _, err := s.writer.Write(input); err != nil {
+			return nil, err
+		}
+		if err := s.writer.Flush(); err != nil {
+			return nil, err
+		}
+		out := append([]byte(nil), s.buf.Bytes()...)
+		s.buf.Reset()
+		if s.maxOut > 0 && s.outTotal+int64(len(out)) > s.maxOut {
+			return nil, fmt.Errorf("zlib 输出超过上限 %d", s.maxOut)
+		}
+		s.outTotal += int64(len(out))
+		return out, nil
+	}
+	if s.pw == nil {
+		return nil, fmt.Errorf("zlib 流已关闭")
+	}
+	if _, err := s.pw.Write(input); err != nil {
+		return nil, err
+	}
+	return s.takeOut()
+}
+
+func (s *zlibStream) end() ([]byte, error) {
+	if s.writer != nil {
+		if err := s.writer.Close(); err != nil {
+			return nil, err
+		}
+		out := append([]byte(nil), s.buf.Bytes()...)
+		s.buf.Reset()
+		if s.maxOut > 0 && s.outTotal+int64(len(out)) > s.maxOut {
+			return nil, fmt.Errorf("zlib 输出超过上限 %d", s.maxOut)
+		}
+		return out, nil
+	}
+	if s.pw != nil {
+		_ = s.pw.Close()
+		<-s.done
+	}
+	return s.takeOut()
+}
+
+func (s *zlibStream) close() {
+	s.outMu.Lock()
+	if s.closed {
+		s.outMu.Unlock()
+		return
+	}
+	s.closed = true
+	s.outMu.Unlock()
+	if s.writer != nil {
+		_ = s.writer.Close()
+	}
+	if s.pw != nil {
+		_ = s.pw.CloseWithError(fmt.Errorf("zlib 流已关闭"))
+	}
+}
+
+func (r *Runtime) registerZlibStream(s *zlibStream) uint64 {
+	r.zlibMu.Lock()
+	defer r.zlibMu.Unlock()
+	r.zlibSeq++
+	id := r.zlibSeq
+	r.zlibStreams[id] = s
+	return id
+}
+
+func (r *Runtime) takeZlibStream(id uint64) (*zlibStream, error) {
+	r.zlibMu.Lock()
+	defer r.zlibMu.Unlock()
+	s, ok := r.zlibStreams[id]
+	if !ok {
+		return nil, fmt.Errorf("zlib 流句柄无效: %d", id)
+	}
+	return s, nil
+}
+
+func (r *Runtime) removeZlibStream(id uint64) *zlibStream {
+	r.zlibMu.Lock()
+	defer r.zlibMu.Unlock()
+	s := r.zlibStreams[id]
+	delete(r.zlibStreams, id)
+	return s
+}
+
+func (r *Runtime) closeZlibStreams() {
+	r.zlibMu.Lock()
+	streams := make([]*zlibStream, 0, len(r.zlibStreams))
+	for id, s := range r.zlibStreams {
+		streams = append(streams, s)
+		delete(r.zlibStreams, id)
+	}
+	r.zlibMu.Unlock()
+	for _, s := range streams {
+		s.close()
+	}
+}
+
+func (r *Runtime) nativeZlibStreamNew(raw *moejs.Runtime) moejs.NativeFunc {
+	return func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+		if len(args) < 1 {
+			return engine.Undefined(), fmt.Errorf("zlibStreamNew(op) 需要 op")
+		}
+		op, err := toString(raw, args[0])
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		s, err := newZlibStream(op, maxZlibOutBytes)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return raw.FromGo(float64(r.registerZlibStream(s)))
+	}
+}
+
+func (r *Runtime) nativeZlibStreamWrite(raw *moejs.Runtime) moejs.NativeFunc {
+	return func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+		if len(args) < 2 {
+			return engine.Undefined(), fmt.Errorf("zlibStreamWrite(handle, base64) 需要两个参数")
+		}
+		id := uint64(numberArg(raw, args, 0, 0))
+		s, err := r.takeZlibStream(id)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		text, err := toString(raw, args[1])
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		in, err := base64.StdEncoding.DecodeString(text)
+		if err != nil {
+			return engine.Undefined(), fmt.Errorf("zlib 输入不是合法 base64: %w", err)
+		}
+		if len(in) > maxZlibInBytes {
+			return engine.Undefined(), fmt.Errorf("zlib 输入超过上限 %d", maxZlibInBytes)
+		}
+		out, err := s.write(in)
+		if err != nil {
+			_ = r.removeZlibStream(id)
+			s.close()
+			return engine.Undefined(), err
+		}
+		return raw.FromGo(base64.StdEncoding.EncodeToString(out))
+	}
+}
+
+func (r *Runtime) nativeZlibStreamEnd(raw *moejs.Runtime) moejs.NativeFunc {
+	return func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+		if len(args) < 1 {
+			return engine.Undefined(), fmt.Errorf("zlibStreamEnd(handle) 需要 handle")
+		}
+		id := uint64(numberArg(raw, args, 0, 0))
+		s, err := r.takeZlibStream(id)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		_ = r.removeZlibStream(id)
+		out, err := s.end()
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return raw.FromGo(base64.StdEncoding.EncodeToString(out))
+	}
+}
+
+func (r *Runtime) nativeZlibStreamClose(raw *moejs.Runtime) moejs.NativeFunc {
+	return func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+		if len(args) < 1 {
+			return engine.Undefined(), fmt.Errorf("zlibStreamClose(handle) 需要 handle")
+		}
+		if s := r.removeZlibStream(uint64(numberArg(raw, args, 0, 0))); s != nil {
+			s.close()
+		}
+		return engine.Undefined(), nil
+	}
 }

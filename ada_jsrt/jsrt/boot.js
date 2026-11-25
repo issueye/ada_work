@@ -22,6 +22,8 @@ function text(e) {
 }
 
 function clearPending() {
+  // 常驻模式下定时器属于 Node 风格的进程生命周期，不能在一次调用结束时清掉。
+  if (globalThis.__adaResident === true) return;
   const clear = globalThis.__adaClearPendingTimers;
   if (typeof clear === "function") clear();
 }
@@ -107,3 +109,8 @@ export function __adaInvokeFn(fn, thisArg, argsJSON, onOK, onErr) {
 // 模块求值阶段(用户模块顶层)留下的定时器同样不该活到第一次调用。
 // 此刻 boot 的模块体刚执行完:入口与它 import 的模块都已求值,而宿主还没开始调用。
 clearPending();
+
+// 顶层 await 支持:入口(及其依赖)求值完成后才执行到这里。
+// 宿主据此判断启动完成；没有 TLA 时就是同步完成。
+const ready = globalThis.__adaReady;
+if (typeof ready === "function") ready();

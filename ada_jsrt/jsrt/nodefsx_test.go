@@ -473,7 +473,7 @@ export async function run(): Promise<any> {
 }
 
 // 12. watch 的拒绝形状:明确 ERR_NOT_SUPPORTED,而不是静默无效的 watcher。
-func TestNodeFSWatchUnsupported(t *testing.T) {
+func TestNodeFSWatchRequiresResident(t *testing.T) {
 	rt, _ := newFSExtRuntime(t, map[string]string{
 		"plugin.ts": `
 import fs from "node:fs"
@@ -482,7 +482,7 @@ export function probe(): any {
   const out: any = {}
   try { fs.watch("/workspace", () => {}) } catch (e: any) { out.watch = e.code }
   try { fs.watchFile("/workspace", () => {}) } catch (e: any) { out.watchFile = e.code }
-  try { fs.unwatchFile("/workspace") } catch (e: any) { out.unwatchFile = e.code }
+  try { fs.unwatchFile("/workspace"); out.unwatchFile = "ok" } catch (e: any) { out.unwatchFile = e.code }
   return out
 }`,
 	}, false)
@@ -492,10 +492,13 @@ export function probe(): any {
 		t.Fatalf("调用失败: %v", err)
 	}
 	obj, _ := got.(map[string]any)
-	for _, key := range []string{"watch", "watchFile", "unwatchFile"} {
+	for _, key := range []string{"watch", "watchFile"} {
 		if s, _ := obj[key].(string); s != "ERR_NOT_SUPPORTED" {
 			t.Fatalf("%s 应是 ERR_NOT_SUPPORTED,实际 %q", key, s)
 		}
+	}
+	if s, _ := obj["unwatchFile"].(string); s != "ok" {
+		t.Fatalf("unwatchFile 应可安全调用，实际 %q", s)
 	}
 }
 

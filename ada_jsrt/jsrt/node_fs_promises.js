@@ -28,4 +28,82 @@ export const utimes = ext.promises.utimes;
 export const write = ext.promises.write;
 export const writev = ext.promises.writev;
 
-export default base;
+const promisesModule = Object.assign({}, base);
+promisesModule.readFile = readFile;
+promisesModule.writeFile = writeFile;
+promisesModule.appendFile = appendFile;
+promisesModule.readdir = readdir;
+export default promisesModule;
+
+// 核心 fs/promises 的配额包装；fsx promises 路径已由 Go 侧强制。
+const fsQuota = globalThis.__adaFSLimits || {};
+const maxFileBytes = Number(fsQuota.maxFileBytes) || 0;
+const maxDirEntries = Number(fsQuota.maxDirEntries) || 0;
+
+function quotaError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+function utf8Length(value) {
+  let n = 0;
+  for (let i = 0; i < value.length; i++) {
+    const c = value.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < value.length) { n += 4; i += 1; }
+    else n += 3;
+  }
+  return n;
+}
+
+function dataByteLength(data) {
+  if (typeof data === "string") return utf8Length(data);
+  if (data && typeof data.byteLength === "number") return data.byteLength;
+  if (data && typeof data.length === "number") return data.length;
+  return 0;
+}
+
+function encodingOf(options) {
+  if (typeof options === "string") return options;
+  if (options && typeof options === "object" && typeof options.encoding === "string") return options.encoding;
+  return undefined;
+}
+
+function checkFileSize(size) {
+  if (maxFileBytes > 0 && size > maxFileBytes) {
+    throw quotaError("EFBIG", "文件超过 MaxFileBytes(" + maxFileBytes + ")");
+  }
+}
+
+export async function readFile(path, options) {
+  const data = await base.readFile(path, options);
+  if (maxFileBytes > 0) {
+    const size = typeof data === "string" ? utf8Length(data) : data.length;
+    checkFileSize(size);
+  }
+  return data;
+}
+
+export async function writeFile(path, data, options) {
+  checkFileSize(dataByteLength(data));
+  return base.writeFile(path, data, options);
+}
+
+export async function appendFile(path, data, options) {
+  if (maxFileBytes > 0) {
+    let size = dataByteLength(data);
+    try { size += (await base.stat(path)).size; } catch (_) {}
+    checkFileSize(size);
+  }
+  return base.appendFile(path, data, options);
+}
+
+export async function readdir(path, options) {
+  const list = await base.readdir(path, options);
+  if (maxDirEntries > 0 && list.length > maxDirEntries) {
+    throw quotaError("EFBIG", "目录条目超过 MaxDirEntries(" + maxDirEntries + ")");
+  }
+  return list;
+}

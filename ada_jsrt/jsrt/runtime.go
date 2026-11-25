@@ -13,10 +13,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/MoeForge/moejs"
@@ -37,7 +40,19 @@ var (
 	ErrClosed = errors.New("jsrt: 运行时已关闭")
 	// ErrBroken 表示运行时在中断后未能收尾,不应再被复用。
 	ErrBroken = errors.New("jsrt: 运行时已损坏")
+	// ErrStartupTimeout 表示入口（含顶层 await）在启动上限内没有完成。
+	ErrStartupTimeout = errors.New("jsrt: 启动超时")
 )
+
+// ExitError 是 ExitPolicy=ExitRequest 时 process.exit 的结果。
+type ExitError struct{ Code int }
+
+func (e *ExitError) Error() string {
+	if e == nil {
+		return "jsrt: 进程退出"
+	}
+	return fmt.Sprintf("jsrt: 进程退出(code=%d)", e.Code)
+}
 
 // Service 是 JS 侧 ctx.provide 的产物,也是 Go 侧拿到的服务值。
 //
@@ -129,6 +144,13 @@ type Host struct {
 	DNSLookup func(ctx context.Context, op, host, rrtype string) (string, error)
 	// NetDial 建立一条 TCP 连接;连接句柄由运行时登记,Close 时统一关闭。
 	NetDial func(ctx context.Context, network, address string, timeout time.Duration) (NetConn, error)
+	// TLSDial 建立一条 TLS 连接;ServerName/Insecure/ALPN 来自 node:tls 的 options。
+	// 未实现时 node:tls 模块不可用。
+	TLSDial func(ctx context.Context, network, address string, opts TLSOptions) (NetConn, error)
+	// NetListen 监听一个 TCP 地址;未实现时 net.createServer 不可用。
+	NetListen func(ctx context.Context, network, address string) (NetListener, error)
+	// TLSListen 监听一个 TLS 地址;未实现时 tls.createServer/https 服务端不可用。
+	TLSListen func(ctx context.Context, network, address string, opts TLSOptions) (NetListener, error)
 	// Secrets 按名读取宿主的 secret。实现由宿主接到自己的 secret 服务,
 	// 授权与审计由 policy 装饰器负责;没有 secrets 服务时返回错误而不是空串,
 	// 让调用方知道「不能读」与「读到了空值」是两件事。
@@ -161,11 +183,22 @@ type NodeFSOptions struct {
 type Options struct {
 	Artifact *compile.Artifact
 	// MemoryLimit 是 JS 堆上限(字节),0 表示不限。
+	// Limits.MemoryBytes 是同义的新配置;两者都为零表示不限。
 	MemoryLimit int64
+	// Mode 选择事件循环模式；零值保持现有的调用边界模型。
+	Mode LoopMode
+	// Permissions 是文件/网络/子进程/环境变量的静态白名单；零值全部拒绝。
+	Permissions Permissions
+	// Limits 是资源限制；零值表示不额外限制。
+	Limits Limits
+	// ExitPolicy 控制 process.exit；零值是 ExitDeny。
+	ExitPolicy ExitPolicy
 	// DisableDynamicCode 关闭 eval 与 Function 构造器。
 	DisableDynamicCode bool
 	// Logf 接收 JS 侧 ctx.log / __adaLog 的日志;nil 表示丢弃。
 	Logf func(format string, args ...any)
+	// OnEvent 接收权限、异常、退出等可观测事件;nil 表示丢弃。
+	OnEvent func(Event)
 	// Host 提供 ctx.provide / ctx.emit 的落地实现。
 	Host Host
 	// Modules 是宿主注入的 moejs 模块(如 "ada:shell");Link 时优先于相对路径。
@@ -173,6 +206,7 @@ type Options struct {
 	// Globals 是加载前注入的全局变量(宿主能力对象)。
 	Globals map[string]any
 	// Node 配置 Node 内置模块;nil 表示只装默认的 path/os/buffer。
+	// Deprecated: 文件权限请使用 Permissions.FS；该字段保留用于兼容旧调用。
 	Node *NodeOptions
 }
 
@@ -181,10 +215,33 @@ type Runtime struct {
 	art  *compile.Artifact
 	opts Options
 
+	// 权限与限制（编译后的策略不可变，可并发使用）。
+	mode        LoopMode
+	perms       Permissions
+	fsPerm      FSPermission
+	fsPolicy    *fsPolicy
+	fsEnforce   bool
+	netPolicy   *netPolicy
+	limits      Limits
+	exitPolicy  ExitPolicy
+	exitCode    int
+	exitErr     error
+	exited      bool
+	onEvent     func(Event)
+	memoryLimit int64
+
 	jobs    chan func()
 	quit    chan struct{}
 	stopped chan struct{}
 	quitOne sync.Once
+	done    chan struct{}
+	doneOne sync.Once
+
+	// resident 表示事件循环已 Start；callMu 让常驻模式下的 Call 串行执行，
+	// 保持现有 callCtx/handlers 的单调用假设。
+	resident bool
+	loopHold func(func(*moejs.Runtime))
+	callMu   sync.Mutex
 
 	mu      sync.Mutex
 	raw     *moejs.Runtime
@@ -199,9 +256,10 @@ type Runtime struct {
 
 	// nodeRoot 是 node:fs 的工作区根(补齐层也用它);nodeMount/nodeWrite 是根对应的
 	// 虚拟挂载点与写权限。三者只在 node:fs 安装成功时非零(见 nodefsx.go)。
-	nodeRoot  *os.Root
-	nodeMount string
-	nodeWrite bool
+	nodeRoot     *os.Root
+	nodeHostRoot string // Root 的绝对路径,用于 fsx 的符号链接解析
+	nodeMount    string
+	nodeWrite    bool
 
 	// clockStart 是运行时启动时刻,给 __adaHost.monoMs(单调时钟)做基准。
 	clockStart time.Time
@@ -228,9 +286,18 @@ type Runtime struct {
 
 	// netMu 保护 node:net 的连接句柄表。句柄由 worker 分配,
 	// 但 Close 可能在任意协程上关闭全部连接,所以必须加锁。
-	netMu    sync.Mutex
-	netSeq   uint64
-	netConns map[uint64]NetConn
+	netMu        sync.Mutex
+	netSeq       uint64
+	netConns     map[uint64]NetConn
+	listenerSeq  uint64
+	netListeners map[uint64]NetListener
+	// netPending 是已预留但尚未登记/失败的连接数，用于 MaxConnections 并发限流。
+	netPending int
+
+	// zlibStreams 是 node:zlib 的流式句柄（见 nodezlib.go）。
+	zlibMu      sync.Mutex
+	zlibSeq     uint64
+	zlibStreams map[uint64]*zlibStream
 }
 
 // enterHost/leaveHost 标记 worker 正在进入宿主回调。
@@ -263,21 +330,53 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if err := opts.Artifact.Verify(); err != nil {
 		return nil, err
 	}
+	if err := opts.validate(); err != nil {
+		return nil, err
+	}
+	fsPerm, err := opts.fsPermission()
+	if err != nil {
+		return nil, err
+	}
+	fsPolicy, err := newFSPolicy(fsPerm)
+	if err != nil {
+		return nil, err
+	}
+	netPolicy, err := newNetPolicy(opts.Permissions.Net)
+	if err != nil {
+		return nil, err
+	}
+	memoryLimit := opts.MemoryLimit
+	if memoryLimit == 0 {
+		memoryLimit = opts.Limits.MemoryBytes
+	}
 	r := &Runtime{
-		art:        opts.Artifact,
-		opts:       opts,
-		jobs:       make(chan func()),
-		quit:       make(chan struct{}),
-		stopped:    make(chan struct{}),
-		handlers:   make(map[uint64]handlerEntry),
-		netConns:   make(map[uint64]NetConn),
-		fds:        make(map[uint64]*fdEntry),
-		clockStart: time.Now(),
+		art:          opts.Artifact,
+		opts:         opts,
+		mode:         opts.Mode,
+		perms:        opts.Permissions,
+		fsPerm:       fsPerm,
+		fsPolicy:     fsPolicy,
+		fsEnforce:    opts.Permissions.FS.Enabled,
+		netPolicy:    netPolicy,
+		limits:       opts.Limits,
+		exitPolicy:   opts.ExitPolicy,
+		onEvent:      opts.OnEvent,
+		memoryLimit:  memoryLimit,
+		jobs:         make(chan func()),
+		quit:         make(chan struct{}),
+		stopped:      make(chan struct{}),
+		done:         make(chan struct{}),
+		handlers:     make(map[uint64]handlerEntry),
+		netConns:     make(map[uint64]NetConn),
+		netListeners: make(map[uint64]NetListener),
+		zlibStreams:  make(map[uint64]*zlibStream),
+		fds:          make(map[uint64]*fdEntry),
+		clockStart:   time.Now(),
 	}
 	go r.worker()
 
 	ready := make(chan error, 1)
-	if err := r.enqueue(ctx, func() { ready <- r.load() }); err != nil {
+	if err := r.enqueue(ctx, func() { ready <- r.load(ctx) }); err != nil {
 		r.shutdown()
 		return nil, err
 	}
@@ -317,8 +416,12 @@ func (r *Runtime) enqueue(ctx context.Context, job func()) error {
 	// 在 worker 执行任务期间保存调用 ctx;原生 shell/fs 回调据此继承
 	// workspace 绑定、取消与超时,而不是退回 context.Background。
 	wrapped := func() {
-		r.callCtx = ctx
-		defer func() { r.callCtx = nil }()
+		// Scoped 模式的任务在 worker 上跑，callCtx 在这里设置/清理；
+		// Resident 的调用在 loop 上跑，由 callResident / load 自己设置。
+		if r.mode != LoopResident {
+			r.callCtx = ctx
+			defer func() { r.callCtx = nil }()
+		}
 		job()
 	}
 	select {
@@ -339,11 +442,86 @@ func (r *Runtime) currentContext() context.Context {
 	return context.Background()
 }
 
+// startupTimeout 是启动（含顶层 await）的上限；未配置时用 30s 兜底。
+func (r *Runtime) startupTimeout() time.Duration {
+	if r.limits.StartupTimeout > 0 {
+		return r.limits.StartupTimeout
+	}
+	return 30 * time.Second
+}
+
+// postToLoop 把任务投递到常驻循环；只在 LoopResident 且循环可用时成功。
+func (r *Runtime) postToLoop(fn func(*moejs.Runtime)) bool {
+	r.mu.Lock()
+	loop, resident, broken, closed := r.loop, r.resident, r.broken, r.closed
+	r.mu.Unlock()
+	if loop == nil || !resident || broken || closed {
+		return false
+	}
+	return loop.RunOnLoop(fn)
+}
+
+// finish 关闭 Wait 的等待信号；可重复调用。
+func (r *Runtime) finish() {
+	r.doneOne.Do(func() { close(r.done) })
+}
+
+// Wait 等待常驻运行时关闭。当前没有 beforeExit，只有 Close 或退出请求会唤醒它。
+func (r *Runtime) Wait(ctx context.Context) error {
+	if r.mode != LoopResident {
+		return errors.New("jsrt: Wait 只适用于 LoopResident")
+	}
+	select {
+	case <-r.done:
+		r.mu.Lock()
+		err := r.exitErr
+		r.mu.Unlock()
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (r *Runtime) closeTimeout() time.Duration {
+	if r.limits.CloseTimeout > 0 {
+		return r.limits.CloseTimeout
+	}
+	return 5 * time.Second
+}
+
+// requestExit 响应 process.exit(ExitRequest)：设置退出码并异步走 Close。
+func (r *Runtime) requestExit(code int) {
+	r.mu.Lock()
+	if r.exited {
+		r.mu.Unlock()
+		return
+	}
+	r.exited = true
+	r.exitCode = code
+	r.exitErr = &ExitError{Code: code}
+	r.mu.Unlock()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), r.closeTimeout())
+		defer cancel()
+		_ = r.Close(ctx)
+	}()
+}
+
 // load 在 worker 上执行:编译 Artifact 的每个模块 → Link → Load。
-func (r *Runtime) load() error {
+func (r *Runtime) load(ctx context.Context) error {
 	raw := moejs.NewRuntime(moejs.Options{
-		MemoryLimit:        r.opts.MemoryLimit,
+		MemoryLimit:        r.memoryLimit,
 		DisableDynamicCode: r.opts.DisableDynamicCode,
+	})
+	// 未处理的 Promise 拒绝至少要被宿主看见（Node 的 unhandledRejection）。
+	// process 事件面在后续阶段接入；这里先统一走 OnEvent，避免静默丢失。
+	raw.SetPromiseRejectionTracker(func(p moejs.Value, op moejs.PromiseRejectionOperation) {
+		if op != moejs.PromiseRejectionReject {
+			return
+		}
+		_, reason, _ := moejs.PromiseResult(p)
+		r.emitEvent(Event{Kind: "unhandled_rejection", Err: r.rejectionError(reason)})
+		r.emitProcess("unhandledRejection", reason)
 	})
 	// node:fs 的异步回调会从 worker 池回到这个 runtime;先登记 raw。
 	r.mu.Lock()
@@ -451,8 +629,11 @@ func (r *Runtime) load() error {
 		if err := hostObj.SetProp(realm, realm.KeyFromGoString("dnsLookup"), raw.Function("dnsLookup", 3, r.nativeDNSLookup(raw))); err != nil {
 			return fmt.Errorf("jsrt: 注入 __adaHost.dnsLookup 失败: %w", err)
 		}
+		if err := hostObj.SetProp(realm, realm.KeyFromGoString("dnsLookupAsync"), raw.Function("dnsLookupAsync", 3, r.nativeDNSLookupAsync(raw))); err != nil {
+			return fmt.Errorf("jsrt: 注入 __adaHost.dnsLookupAsync 失败: %w", err)
+		}
 	}
-	if r.opts.Host.NetDial != nil {
+	if r.opts.Host.NetDial != nil || r.opts.Host.TLSDial != nil || r.opts.Host.NetListen != nil || r.opts.Host.TLSListen != nil {
 		netObj := realm.NewObject()
 		setNetFn := func(name string, length int, fn moejs.NativeFunc) error {
 			return netObj.SetProp(realm, realm.KeyFromGoString(name), raw.Function(name, length, fn))
@@ -460,8 +641,14 @@ func (r *Runtime) load() error {
 		if err := setNetFn("dial", 2, r.nativeNetDial(raw)); err != nil {
 			return fmt.Errorf("jsrt: 注入 __adaHost.netDial 失败: %w", err)
 		}
+		if err := setNetFn("dialAsync", 2, r.nativeNetDialAsync(raw)); err != nil {
+			return fmt.Errorf("jsrt: 注入 __adaHost.netDialAsync 失败: %w", err)
+		}
 		if err := setNetFn("read", 2, r.nativeNetRead(raw)); err != nil {
 			return fmt.Errorf("jsrt: 注入 __adaHost.netRead 失败: %w", err)
+		}
+		if err := setNetFn("readAsync", 2, r.nativeNetReadAsync(raw)); err != nil {
+			return fmt.Errorf("jsrt: 注入 __adaHost.netReadAsync 失败: %w", err)
 		}
 		if err := setNetFn("write", 2, r.nativeNetWrite(raw)); err != nil {
 			return fmt.Errorf("jsrt: 注入 __adaHost.netWrite 失败: %w", err)
@@ -471,6 +658,30 @@ func (r *Runtime) load() error {
 		}
 		if err := setNetFn("addr", 1, r.nativeNetAddr(raw)); err != nil {
 			return fmt.Errorf("jsrt: 注入 __adaHost.netAddr 失败: %w", err)
+		}
+		if err := setNetFn("tlsDialAsync", 3, r.nativeTLSDialAsync(raw)); err != nil {
+			return fmt.Errorf("jsrt: 注入 __adaHost.net.tlsDialAsync 失败: %w", err)
+		}
+		if r.opts.Host.NetListen != nil {
+			if err := setNetFn("listenAsync", 1, r.nativeNetListenAsync(raw)); err != nil {
+				return fmt.Errorf("jsrt: 注入 __adaHost.net.listenAsync 失败: %w", err)
+			}
+		}
+		if r.opts.Host.NetListen != nil || r.opts.Host.TLSListen != nil {
+			if err := setNetFn("acceptAsync", 1, r.nativeNetAcceptAsync(raw)); err != nil {
+				return fmt.Errorf("jsrt: 注入 __adaHost.net.acceptAsync 失败: %w", err)
+			}
+			if err := setNetFn("closeListener", 1, r.nativeNetListenerClose(raw)); err != nil {
+				return fmt.Errorf("jsrt: 注入 __adaHost.net.closeListener 失败: %w", err)
+			}
+			if err := setNetFn("listenerAddr", 1, r.nativeNetListenerAddr(raw)); err != nil {
+				return fmt.Errorf("jsrt: 注入 __adaHost.net.listenerAddr 失败: %w", err)
+			}
+		}
+		if r.opts.Host.TLSListen != nil {
+			if err := setNetFn("tlsListenAsync", 2, r.nativeTLSListenAsync(raw)); err != nil {
+				return fmt.Errorf("jsrt: 注入 __adaHost.net.tlsListenAsync 失败: %w", err)
+			}
 		}
 		if err := hostObj.SetProp(realm, realm.KeyFromGoString("net"), engine.ObjectValue(netObj)); err != nil {
 			return fmt.Errorf("jsrt: 注入 __adaHost.net 失败: %w", err)
@@ -504,6 +715,18 @@ func (r *Runtime) load() error {
 	if err := hostObj.SetProp(realm, realm.KeyFromGoString("zlib"), raw.Function("zlib", 2, r.nativeZlib(raw))); err != nil {
 		return fmt.Errorf("jsrt: 注入 __adaHost.zlib 失败: %w", err)
 	}
+	if err := hostObj.SetProp(realm, realm.KeyFromGoString("zlibStreamNew"), raw.Function("zlibStreamNew", 1, r.nativeZlibStreamNew(raw))); err != nil {
+		return fmt.Errorf("jsrt: 注入 __adaHost.zlibStreamNew 失败: %w", err)
+	}
+	if err := hostObj.SetProp(realm, realm.KeyFromGoString("zlibStreamWrite"), raw.Function("zlibStreamWrite", 2, r.nativeZlibStreamWrite(raw))); err != nil {
+		return fmt.Errorf("jsrt: 注入 __adaHost.zlibStreamWrite 失败: %w", err)
+	}
+	if err := hostObj.SetProp(realm, realm.KeyFromGoString("zlibStreamEnd"), raw.Function("zlibStreamEnd", 1, r.nativeZlibStreamEnd(raw))); err != nil {
+		return fmt.Errorf("jsrt: 注入 __adaHost.zlibStreamEnd 失败: %w", err)
+	}
+	if err := hostObj.SetProp(realm, realm.KeyFromGoString("zlibStreamClose"), raw.Function("zlibStreamClose", 1, r.nativeZlibStreamClose(raw))); err != nil {
+		return fmt.Errorf("jsrt: 注入 __adaHost.zlibStreamClose 失败: %w", err)
+	}
 	// 单调时钟:node:perf_hooks 的 now() 用它,而不是会跳变的 Date.now()。
 	if err := hostObj.SetProp(realm, realm.KeyFromGoString("monoMs"), raw.Function("monoMs", 0, r.nativeMonoMs(raw))); err != nil {
 		return fmt.Errorf("jsrt: 注入 __adaHost.monoMs 失败: %w", err)
@@ -523,6 +746,9 @@ func (r *Runtime) load() error {
 		}
 		if err := fsxObj.SetProp(realm, realm.KeyFromGoString("callAsync"), raw.Function("callAsync", 2, r.nativeFSXCallAsync(raw))); err != nil {
 			return fmt.Errorf("jsrt: 注入 __adaHost.fsx.callAsync 失败: %w", err)
+		}
+		if err := fsxObj.SetProp(realm, realm.KeyFromGoString("watchCheck"), raw.Function("watchCheck", 1, r.nativeFSXWatchCheck(raw))); err != nil {
+			return fmt.Errorf("jsrt: 注入 __adaHost.fsx.watchCheck 失败: %w", err)
 		}
 		if err := hostObj.SetProp(realm, realm.KeyFromGoString("fsx"), engine.ObjectValue(fsxObj)); err != nil {
 			return fmt.Errorf("jsrt: 注入 __adaHost.fsx 失败: %w", err)
@@ -602,13 +828,184 @@ func (r *Runtime) load() error {
 	if err != nil {
 		return fmt.Errorf("jsrt: 链接失败: %w", err)
 	}
+	// 常驻模式不清调用边界遗留的定时器；boot.js 依据这个标记决定。
+	if err := raw.SetGlobal("__adaResident", r.mode == LoopResident); err != nil {
+		return fmt.Errorf("jsrt: 注入 __adaResident 失败: %w", err)
+	}
 	// 加载在循环里跑:模块顶层若调用 setTimeout(以及在支持的形态下 await),
 	// 必须在有循环的前提下求值,否则会出现「模块看到的是半装好的运行时」。
-	if err := loop.Run(func(rt *moejs.Runtime) error { return rt.Load(linked) }); err != nil {
-		if errors.Is(err, moejs.ErrModulePending) {
-			return fmt.Errorf("jsrt: 插件模块不能用顶层 await:请把异步放到 apply 里(%w)", err)
+	preludeBytes, readErr := bootFS.ReadFile("prelude.js")
+	if readErr != nil {
+		return fmt.Errorf("jsrt: 读取 prelude 失败: %w", readErr)
+	}
+	preludeScript, compileErr := moejs.CompileScript("ada:prelude", string(preludeBytes))
+	if compileErr != nil {
+		return fmt.Errorf("jsrt: 编译 prelude 失败: %w", compileErr)
+	}
+	readyCh := make(chan struct{})
+	var readyOnce sync.Once
+	readyRealm := raw.Realm()
+	// FS 配额供 JS 包装层（核心 readFile/writeFile/readdir）使用。
+	if err := raw.SetGlobal("__adaFSLimits", map[string]any{
+		"maxFileBytes":  r.fsPerm.MaxFileBytes,
+		"maxDirEntries": r.fsPerm.MaxDirEntries,
+		"maxOpenFiles":  r.fsPerm.MaxOpenFiles,
+	}); err != nil {
+		return fmt.Errorf("jsrt: 注入 __adaFSLimits 失败: %w", err)
+	}
+	// Env 只暴露白名单键；写权限由 __adaEnvSet 控制（Proxy 在 process.js 里）。
+	envMap := make(map[string]string)
+	for _, kv := range os.Environ() {
+		name, value, ok := strings.Cut(kv, "=")
+		if ok && r.perms.Env.check(name) {
+			envMap[name] = value
 		}
-		return fmt.Errorf("jsrt: 加载失败: %w", err)
+	}
+	if err := raw.SetGlobal("__adaEnv", envMap); err != nil {
+		return fmt.Errorf("jsrt: 注入 __adaEnv 失败: %w", err)
+	}
+	if err := raw.SetGlobal("__adaEnvSet", r.perms.Env.Set); err != nil {
+		return fmt.Errorf("jsrt: 注入 __adaEnvSet 失败: %w", err)
+	}
+	maxReq, maxResp := int64(0), int64(0)
+	if r.netPolicy != nil {
+		maxReq = r.netPolicy.perm.MaxRequestBytes
+		maxResp = r.netPolicy.perm.MaxResponseBytes
+	}
+	if err := raw.SetGlobal("__adaHTTPLimits", map[string]any{
+		"maxRequestBytes":  maxReq,
+		"maxResponseBytes": maxResp,
+	}); err != nil {
+		return fmt.Errorf("jsrt: 注入 __adaHTTPLimits 失败: %w", err)
+	}
+	exitVal := raw.Function("__adaExit", 1, func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+		code := 0
+		if len(args) > 0 {
+			if v, err := raw.ToGo(args[0]); err == nil {
+				switch n := v.(type) {
+				case int64:
+					code = int(n)
+				case float64:
+					code = int(n)
+				case int:
+					code = n
+				}
+			}
+		}
+		if r.exitPolicy != ExitRequest {
+			return engine.Undefined(), fmt.Errorf("process.exit 被禁用")
+		}
+		if r.mode != LoopResident {
+			return engine.Undefined(), fmt.Errorf("process.exit 需要 LoopResident")
+		}
+		r.requestExit(code)
+		return engine.Undefined(), nil
+	})
+	if err := readyRealm.Global.SetProp(readyRealm, readyRealm.KeyFromGoString("__adaExit"), exitVal); err != nil {
+		return fmt.Errorf("jsrt: 注入 __adaExit 失败: %w", err)
+	}
+	readyVal := raw.Function("__adaReady", 0, func(_ *engine.Realm, _ engine.Value, _ []engine.Value) (engine.Value, error) {
+		readyOnce.Do(func() { close(readyCh) })
+		return engine.Undefined(), nil
+	})
+	if err := readyRealm.Global.SetProp(readyRealm, readyRealm.KeyFromGoString("__adaReady"), readyVal); err != nil {
+		return fmt.Errorf("jsrt: 注入 __adaReady 失败: %w", err)
+	}
+	loadOnLoop := func(rt *moejs.Runtime) error {
+		if _, err := rt.RunScript(preludeScript); err != nil {
+			return fmt.Errorf("jsrt: 执行 prelude 失败: %w", err)
+		}
+		err := rt.Load(linked)
+		if errors.Is(err, moejs.ErrModulePending) {
+			// 顶层 await：求值继续，boot 模块体会在依赖结算后调用 __adaReady。
+			return nil
+		}
+		return err
+	}
+
+	if r.mode == LoopResident {
+		// 常驻循环需要一个持续 hold：否则 Start 在启动任务跑完、暂无定时器时
+		// 就会自然退出，后续 RunOnLoop 投递的任务不会被执行。
+		hold := loop.Hold()
+		r.mu.Lock()
+		r.loopHold = hold
+		r.resident = true
+		r.mu.Unlock()
+		if err := loop.Start(); err != nil {
+			return fmt.Errorf("jsrt: 启动事件循环失败: %w", err)
+		}
+		done := make(chan error, 1)
+		if !r.postToLoop(func(rt *moejs.Runtime) {
+			r.callCtx = ctx
+			defer func() { r.callCtx = nil }()
+			done <- loadOnLoop(rt)
+		}) {
+			return ErrClosed
+		}
+		select {
+		case err := <-done:
+			if err != nil {
+				return fmt.Errorf("jsrt: 加载失败: %w", err)
+			}
+		case <-ctx.Done():
+			return fmt.Errorf("jsrt: 装配被取消: %w", ctx.Err())
+		}
+		timeout := r.startupTimeout()
+		select {
+		case <-readyCh:
+		case <-time.After(timeout):
+			return fmt.Errorf("%w: 入口在 %s 内未完成", ErrStartupTimeout, timeout)
+		case <-ctx.Done():
+			return fmt.Errorf("jsrt: 装配被取消: %w", ctx.Err())
+		}
+	} else {
+		releaseHold := loop.Hold()
+		var releaseOnce sync.Once
+		release := func() {
+			releaseOnce.Do(func() { releaseHold(nil) })
+		}
+		loadDone := make(chan struct{})
+		stopWatch := make(chan struct{})
+		go func() {
+			select {
+			case <-readyCh:
+				release()
+			case <-loadDone:
+			}
+		}()
+		go func() {
+			select {
+			case <-readyCh:
+			case <-time.After(r.startupTimeout()):
+				loop.Interrupt(ErrStartupTimeout)
+			case <-ctx.Done():
+				loop.Interrupt(ctx.Err())
+			case <-stopWatch:
+			}
+		}()
+		runErr := loop.Run(func(rt *moejs.Runtime) error {
+			if err := loadOnLoop(rt); err != nil {
+				release()
+				return err
+			}
+			return nil
+		})
+		close(stopWatch)
+		close(loadDone)
+		if runErr != nil {
+			release()
+			return fmt.Errorf("jsrt: 加载失败: %w", runErr)
+		}
+		select {
+		case <-readyCh:
+		default:
+			release()
+			if ctx.Err() != nil {
+				return fmt.Errorf("jsrt: 装配被取消: %w", ctx.Err())
+			}
+			return fmt.Errorf("%w: 入口在 %s 内未完成", ErrStartupTimeout, r.startupTimeout())
+		}
+		release()
 	}
 
 	hooks := make(map[string]moejs.Hook, 8)
@@ -678,22 +1075,34 @@ func (r *Runtime) installNode(raw *moejs.Runtime, loop *eventloop.Loop) error {
 	opts := mojsnode.Options{Buffer: true}
 	if n := r.opts.Node; n != nil {
 		opts.Buffer = n.Buffer
-		if n.FS != nil && strings.TrimSpace(n.FS.Root) != "" {
-			mount := n.FS.Mount
-			if mount == "" {
-				mount = "/workspace"
-			}
-			cwd := n.FS.Cwd
-			if cwd == "" {
-				cwd = mount
-			}
-			opts.FS = &mojsnode.FSOptions{
-				Root: n.FS.Root, Mount: mount, Cwd: cwd,
-				Write: n.FS.Write, Workers: n.FS.Workers,
-			}
-			// os.tmpdir() 返回 /workspace/.ada-tmp;让它在 node:fs 根内真实存在。
-			_ = os.MkdirAll(filepath.Join(n.FS.Root, ".ada-tmp"), 0o755)
+	}
+	if r.fsPerm.Enabled {
+		mount := r.fsPerm.Mount
+		if mount == "" {
+			mount = "/workspace"
 		}
+		cwd := r.fsPerm.Cwd
+		if cwd == "" {
+			cwd = mount
+		}
+		workers := 0
+		if n := r.opts.Node; n != nil && n.FS != nil {
+			workers = n.FS.Workers
+		}
+		if r.limits.FSWorkers > 0 {
+			workers = r.limits.FSWorkers
+		}
+		fsOpts := &mojsnode.FSOptions{
+			Root: r.fsPerm.Root, Mount: mount, Cwd: cwd,
+			Write: r.fsPerm.Access == FSReadWrite, Workers: workers,
+		}
+		// 只有新的 Permissions.FS 才启用路径级 Allow；旧 Node.FS 保持原有行为。
+		if r.fsEnforce {
+			fsOpts.Allow = r.nodeFSAllow
+		}
+		opts.FS = fsOpts
+		// os.tmpdir() 返回 /workspace/.ada-tmp;让它在 node:fs 根内真实存在。
+		_ = os.MkdirAll(filepath.Join(r.fsPerm.Root, ".ada-tmp"), 0o755)
 	}
 	api, err := mojsnode.InstallLoop(loop, opts)
 	if err != nil {
@@ -705,6 +1114,32 @@ func (r *Runtime) installNode(raw *moejs.Runtime, loop *eventloop.Loop) error {
 	// 补齐层(node:fs 的 mkdtemp/symlink/chmod/...)需要一个根句柄;
 	// 没有工作区根时也不会有 node:fs,所以这里返回 nil 即可。
 	return r.openNodeRoot()
+}
+
+// nodeFSAllow 是 moejs FSOptions.Allow 的实现：把路径级权限接到核心 fs。
+//
+// moejs 传入的 path 是已解析符号链接的虚拟绝对路径，op 是 "read"/"write"。
+// 返回值会被 moejs 映射成 Node errno：EROFS 表示只读，其余拒绝是 EACCES。
+func (r *Runtime) nodeFSAllow(op, p string) error {
+	if r.fsPolicy == nil {
+		return nil
+	}
+	err := r.fsPolicy.check(op, p)
+	if err == nil {
+		return nil
+	}
+	var pe *PermissionError
+	if errors.As(err, &pe) {
+		r.emitEvent(Event{
+			Kind: "permission", Err: err, Scope: "fs", Op: op,
+			Resource: p, Allowed: false,
+		})
+		if pe.Code == "EROFS" {
+			return syscall.EROFS
+		}
+		return syscall.EACCES
+	}
+	return err
 }
 
 // nativeMonoMs 实现 __adaHost.monoMs():相对运行时启动的单调毫秒数。
@@ -784,6 +1219,12 @@ func (r *Runtime) nativeShell(raw *moejs.Runtime) moejs.NativeFunc {
 		if err != nil || program == "" {
 			return engine.Undefined(), fmt.Errorf("shell program 必须是非空字符串")
 		}
+		if r.opts.Permissions.Child.Enabled {
+			if cerr := r.opts.Permissions.Child.check(program); cerr != nil {
+				r.emitPermission("child", "exec", program, cerr)
+				return engine.Undefined(), cerr
+			}
+		}
 		var argv []string
 		if len(args) > 1 {
 			v, convErr := raw.ToGo(args[1])
@@ -831,6 +1272,12 @@ func (r *Runtime) nativeShellExec(raw *moejs.Runtime) moejs.NativeFunc {
 		program, err := toString(raw, args[0])
 		if err != nil || program == "" {
 			return engine.Undefined(), fmt.Errorf("shell.exec program 必须是非空字符串")
+		}
+		if r.opts.Permissions.Child.Enabled {
+			if cerr := r.opts.Permissions.Child.check(program); cerr != nil {
+				r.emitPermission("child", "exec", program, cerr)
+				return engine.Undefined(), cerr
+			}
 		}
 		var argv []string
 		if len(args) > 1 {
@@ -1167,6 +1614,9 @@ func (r *Runtime) call(ctx context.Context, export string, withHost bool, args .
 		}
 		payload[i] = b
 	}
+	if r.mode == LoopResident {
+		return r.callResident(ctx, export, payload, withHost)
+	}
 
 	res := make(chan callResult, 1)
 	job := func() { res <- r.callOnWorker(export, payload, withHost) }
@@ -1237,6 +1687,105 @@ func (r *Runtime) callOnWorker(export string, payload [][]byte, withHost bool) c
 	return callResult{value: v}
 }
 
+// callResident 在常驻循环上发起一次调用。
+//
+// 与 Scoped 的差别：任务只负责「把调用挂上去」，结果由 boot 的 onOK/onFail
+// 回调结算；调用方在循环之外等待。Call 之间用 callMu 串行，保持现有
+// callCtx / handlers 的单调用假设。
+func (r *Runtime) callResident(ctx context.Context, export string, payload [][]byte, withHost bool) (any, error) {
+	if r.reentrant() {
+		return nil, ErrReentrant
+	}
+	r.callMu.Lock()
+	defer r.callMu.Unlock()
+
+	r.mu.Lock()
+	raw, hooks, broken, resident := r.raw, r.hooks, r.broken, r.resident
+	r.mu.Unlock()
+	switch {
+	case !resident || raw == nil:
+		return nil, ErrClosed
+	case broken:
+		return nil, ErrBroken
+	}
+	if _, ok := hooks[export]; !ok {
+		return nil, fmt.Errorf("jsrt: 模块未导出 %q", export)
+	}
+	invoke, ok := hooks[invokeExport]
+	if !ok {
+		return nil, fmt.Errorf("jsrt: 运行时引导模块缺少 %s", invokeExport)
+	}
+
+	c := &loopCall{res: make(chan callResult, 1)}
+	posted := r.postToLoop(func(rt *moejs.Runtime) {
+		r.callCtx = ctx
+		clearCtx := func() { r.callCtx = nil }
+		okFn := rt.Function("__adaOK", 1, func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+			clearCtx()
+			var v any
+			if len(args) > 0 {
+				got, err := rt.ToGo(args[0])
+				if err != nil {
+					c.settle(nil, &returnConvError{err: err})
+					return engine.Undefined(), nil
+				}
+				v = got
+			}
+			c.settle(v, nil)
+			return engine.Undefined(), nil
+		})
+		failFn := rt.Function("__adaFail", 1, func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+			clearCtx()
+			msg := "未知错误"
+			if len(args) > 0 {
+				if s, err := rt.ToGo(args[0]); err == nil {
+					msg = fmt.Sprint(s)
+				}
+			}
+			c.settle(nil, fmt.Errorf("jsrt: JS 异常: %s", msg))
+			return engine.Undefined(), nil
+		})
+		nameVal, err := rt.FromGo(export)
+		if err != nil {
+			clearCtx()
+			c.settle(nil, fmt.Errorf("jsrt: 导出名无法转换: %w", err))
+			return
+		}
+		argsVal, err := rt.FromGo(joinPayload(payload))
+		if err != nil {
+			clearCtx()
+			c.settle(nil, fmt.Errorf("jsrt: 参数无法转换: %w", err))
+			return
+		}
+		host := engine.Undefined()
+		if withHost {
+			host = r.host
+		}
+		if _, err := rt.Call(invoke, nameVal, host, argsVal, okFn, failFn); err != nil {
+			clearCtx()
+			c.settle(nil, err)
+		}
+	})
+	if !posted {
+		return nil, ErrClosed
+	}
+
+	select {
+	case got := <-c.res:
+		return got.value, got.err
+	case <-ctx.Done():
+		r.interrupt(ctx.Err())
+		select {
+		case <-c.res:
+		case <-time.After(interruptGrace):
+		}
+		r.mu.Lock()
+		r.broken = true
+		r.mu.Unlock()
+		return nil, fmt.Errorf("%w: 常驻调用 %q 已取消(%v)", ErrBroken, export, ctx.Err())
+	}
+}
+
 // wrap 把 moejs 的错误翻译成带堆栈的宿主错误。
 func (r *Runtime) wrap(raw *moejs.Runtime, err error) error {
 	var interrupted *moejs.InterruptedError
@@ -1245,9 +1794,53 @@ func (r *Runtime) wrap(raw *moejs.Runtime, err error) error {
 	}
 	var exc *moejs.Exception
 	if errors.As(err, &exc) {
-		return fmt.Errorf("jsrt: JS 异常: %s", raw.StackTrace(exc))
+		return fmt.Errorf("jsrt: JS 异常: %s", r.mapStack(raw.StackTrace(exc)))
 	}
 	return fmt.Errorf("jsrt: JS 调用失败: %w", err)
+}
+
+var stackFrameRe = regexp.MustCompile(`([A-Za-z0-9_./\\-]+\.(?:[cm]?[jt]sx?)):(\d+):(\d+)`)
+
+// mapStack 用 Artifact.SourceMap 把生成代码的行列映射回源文件。
+// 解析失败或找不到映射时保留原栈，不影响错误本身。
+func (r *Runtime) mapStack(stack string) string {
+	if r.art == nil || len(r.art.SourceMap) == 0 {
+		return stack
+	}
+	cache := make(map[string]*compile.SourceMap)
+	return stackFrameRe.ReplaceAllStringFunc(stack, func(frame string) string {
+		parts := stackFrameRe.FindStringSubmatch(frame)
+		if len(parts) != 4 {
+			return frame
+		}
+		file, lineText, colText := parts[1], parts[2], parts[3]
+		data, ok := r.art.SourceMap[file]
+		if !ok {
+			return frame
+		}
+		sm := cache[file]
+		if sm == nil {
+			parsed, err := compile.ParseSourceMap([]byte(data))
+			if err != nil {
+				return frame
+			}
+			cache[file] = parsed
+			sm = parsed
+		}
+		line, err := strconv.Atoi(lineText)
+		if err != nil {
+			return frame
+		}
+		col, err := strconv.Atoi(colText)
+		if err != nil {
+			return frame
+		}
+		source, origLine, origCol, ok := sm.Lookup(line, col)
+		if !ok {
+			return frame
+		}
+		return source + ":" + strconv.Itoa(origLine) + ":" + strconv.Itoa(origCol)
+	})
 }
 
 func (r *Runtime) interrupt(reason error) {
@@ -1703,6 +2296,35 @@ func (r *Runtime) Exports() []string {
 	return out
 }
 
+// rejectionError 把 Promise 拒绝原因转成可读错误（优先 Error.message）。
+func (r *Runtime) rejectionError(reason moejs.Value) error {
+	if reason.IsObject() {
+		r.mu.Lock()
+		raw := r.raw
+		r.mu.Unlock()
+		if raw != nil {
+			realm := raw.Realm()
+			if msg, err := reason.AsObject().GetProp(realm, realm.KeyFromGoString("message")); err == nil {
+				if s := msg.String(); s != "" {
+					return fmt.Errorf("jsrt: 未处理的 Promise 拒绝: %s", s)
+				}
+			}
+		}
+	}
+	return fmt.Errorf("jsrt: 未处理的 Promise 拒绝: %s", reason.String())
+}
+
+// releaseLoopHold 释放常驻循环的持续 hold；可重复调用。
+func (r *Runtime) releaseLoopHold() {
+	r.mu.Lock()
+	hold := r.loopHold
+	r.loopHold = nil
+	r.mu.Unlock()
+	if hold != nil {
+		hold(nil)
+	}
+}
+
 // Close 停止运行时。可重复调用。
 func (r *Runtime) Close(ctx context.Context) error {
 	r.mu.Lock()
@@ -1711,16 +2333,20 @@ func (r *Runtime) Close(ctx context.Context) error {
 		return nil
 	}
 	r.closed = true
+	r.finish()
 	api := r.nodeAPI
 	r.nodeAPI = nil
 	r.mu.Unlock()
 
+	r.closeListeners()
+	r.closeZlibStreams()
 	r.closeConns()
 	if api != nil {
 		_ = api.Close()
 	}
 	r.closeAllFDs()
 	r.closeNodeRoot()
+	r.releaseLoopHold()
 	// 先收事件循环:它的 Terminate 会中断正在跑的 JS、丢弃未到期的定时器与
 	// 未结算的 promise,并等循环收尾。之后再停 worker。
 	r.terminateLoop()
@@ -1738,15 +2364,19 @@ func (r *Runtime) Close(ctx context.Context) error {
 func (r *Runtime) shutdown() {
 	r.mu.Lock()
 	r.closed = true
+	r.finish()
 	api := r.nodeAPI
 	r.nodeAPI = nil
 	r.mu.Unlock()
+	r.closeListeners()
+	r.closeZlibStreams()
 	r.closeConns()
 	if api != nil {
 		_ = api.Close()
 	}
 	r.closeAllFDs()
 	r.closeNodeRoot()
+	r.releaseLoopHold()
 	r.terminateLoop()
 	r.stop()
 	<-r.stopped

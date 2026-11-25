@@ -14,7 +14,11 @@
 
 ## 2. 模型
 
-**一个 `jsrt.Runtime` = 一个 `eventloop.Loop`;循环由宿主调用驱动,不后台常驻。**
+**一个 `jsrt.Runtime` = 一个 `eventloop.Loop`;默认由宿主调用驱动,不后台常驻。**
+
+> 2026-11-26 修订:新增显式 `Options.Mode = LoopResident`。默认仍是 `LoopScoped`;
+> Resident 只用于需要跨调用定时器、服务端或 `fs.watch` 的长期运行时，`Call` 串行，
+> 权限/退出策略由宿主收紧。详见 [ADR 0014](adr/0014-call-scoped-event-loop.md) §7。
 
 ```text
 宿主 goroutine                        worker goroutine(唯一执行 JS 的地方)
@@ -112,10 +116,11 @@ export function __adaInvokeFn(fn, thisArg, argsJSON, onOK, onErr) { ... }
 
 ## 5. 已知边界
 
-- 不支持后台/跨调用定时器(ADR 0014 已列为否决方案 A;复议 2027-03-31);
-- 顶层 `await` 不支持;
+- 默认不支持后台/跨调用定时器;需要时显式使用 `LoopResident`(ADR 0014 §7);
+- 顶层 `await` 支持(Scoped/Resident 均可用),但永久不结算的 Promise 仍报「调用未结算」;
 - `waterfall` 中间件保持同步(`next` 是同步回落),不要在里面 await;
 - `node:fs` 有 fs/workspace 装饰器时仍不可用(策略绕不过去,这是有意的);
+- Resident 下 `fs.watch/watchFile` 是轮询实现,不是 fsnotify(ADR 0016 §8);
 - `console`/`fetch`/`URL` 全局仍未安装(见 [node-compat.md](node-compat.md) §5.1)。
 
 ## 6. 测试

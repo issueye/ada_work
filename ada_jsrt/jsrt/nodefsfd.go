@@ -53,17 +53,19 @@ func fdOpenFlags(flags string) (int, bool, error) {
 // 为什么要记相对路径:futimes 只能按路径改时间(os.File 没有 Chtimes),而路径必须是
 // 工作区内的相对路径,才能继续交给 os.Root 做越界与符号链接判定。
 type fdEntry struct {
-	f   *os.File
-	rel string
+	f       *os.File
+	rel     string
+	dirRead int64
 }
 
 // fdPut 登记一个句柄,返回给 JS 的数字。
 func (r *Runtime) fdPut(f *os.File, rel string) (int64, error) {
 	r.fdMu.Lock()
 	defer r.fdMu.Unlock()
-	if len(r.fds) >= maxOpenFDs {
+	limit := r.fsMaxOpenFiles()
+	if len(r.fds) >= limit {
 		_ = f.Close()
-		return 0, fsxErrf("EMFILE", "", "打开的文件过多(上限 %d)", maxOpenFDs)
+		return 0, fsxErrf("EMFILE", "", "打开的文件过多(上限 %d)", limit)
 	}
 	r.fdSeq++
 	id := r.fdSeq
@@ -80,6 +82,30 @@ func (r *Runtime) fdRel(id int64) (string, error) {
 		return "", fsxErrf("EBADF", "", "无效的文件描述符: %d", id)
 	}
 	return entry.rel, nil
+}
+
+// fsMaxOpenFiles 返回同时打开句柄的上限；0 表示默认值。
+func (r *Runtime) fsMaxOpenFiles() int {
+	if r.fsPerm.MaxOpenFiles > 0 {
+		return r.fsPerm.MaxOpenFiles
+	}
+	return maxOpenFDs
+}
+
+// fsMaxFileBytes 返回单文件大小上限；0 表示不限。
+func (r *Runtime) fsMaxFileBytes() int64 {
+	if r.fsPerm.MaxFileBytes > 0 {
+		return r.fsPerm.MaxFileBytes
+	}
+	return 0
+}
+
+// fsMaxDirEntries 返回单目录条目上限；0 表示不限。
+func (r *Runtime) fsMaxDirEntries() int64 {
+	if r.fsPerm.MaxDirEntries > 0 {
+		return int64(r.fsPerm.MaxDirEntries)
+	}
+	return 0
 }
 
 // fdGet 取句柄;不存在返回 EBADF。
@@ -192,6 +218,11 @@ func (r *Runtime) fsxRead(args []any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if max := r.fsMaxFileBytes(); max > 0 {
+		if st, statErr := f.Stat(); statErr == nil && st.Size() > max {
+			return nil, fsxErrf("EFBIG", "", "文件超过 MaxFileBytes(%d)", max)
+		}
+	}
 	buf := make([]byte, length)
 	var n int
 	if position >= 0 {
@@ -238,6 +269,19 @@ func (r *Runtime) fsxWrite(args []any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if max := r.fsMaxFileBytes(); max > 0 {
+		st, statErr := f.Stat()
+		if statErr != nil {
+			return nil, fsxNodeError(statErr, "")
+		}
+		end := st.Size() + int64(len(data))
+		if position >= 0 {
+			end = position + int64(len(data))
+		}
+		if st.Size() > max || end > max {
+			return nil, fsxErrf("EFBIG", "", "写入超过 MaxFileBytes(%d)", max)
+		}
+	}
 	var n int
 	if position >= 0 {
 		n, err = f.WriteAt(data, position)
@@ -278,6 +322,9 @@ func (r *Runtime) fsxFtruncate(args []any) (any, error) {
 	}
 	if size < 0 {
 		return nil, fsxErrf("EINVAL", "", "len 不能为负")
+	}
+	if max := r.fsMaxFileBytes(); max > 0 && size > max {
+		return nil, fsxErrf("EFBIG", "", "truncate 超过 MaxFileBytes(%d)", max)
 	}
 	f, err := r.fdGet(id)
 	if err != nil {
@@ -342,11 +389,31 @@ func (r *Runtime) fsxReaddir(args []any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if max := r.fsMaxDirEntries(); max > 0 {
+		r.fdMu.Lock()
+		entry := r.fds[uint64(id)]
+		seen := int64(0)
+		if entry != nil {
+			seen = entry.dirRead
+		}
+		r.fdMu.Unlock()
+		if seen >= max {
+			return nil, fsxErrf("EFBIG", "", "目录条目超过 MaxDirEntries(%d)", max)
+		}
+		if remaining := max - seen; int64(count) > remaining {
+			count = remaining
+		}
+	}
 	list, rErr := f.ReadDir(int(count))
 	eof := errors.Is(rErr, io.EOF)
 	if rErr != nil && !eof {
 		return nil, fsxNodeError(rErr, "")
 	}
+	r.fdMu.Lock()
+	if entry := r.fds[uint64(id)]; entry != nil {
+		entry.dirRead += int64(len(list))
+	}
+	r.fdMu.Unlock()
 	entries := make([]map[string]any, 0, len(list))
 	for _, e := range list {
 		kind := "other"

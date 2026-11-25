@@ -129,3 +129,199 @@ for (const name of Object.keys(ext.promises)) {
 }
 
 export default base;
+
+// —— 核心 fs 的配额包装：moejs 的 readFile/writeFile/readdir 不认 Max*，
+// 这里在 JS 边界补上；fsx 路径（fd/流/opendir）已由 Go 侧强制。
+const fsQuota = globalThis.__adaFSLimits || {};
+const baseReadFileSync = base.readFileSync;
+const baseWriteFileSync = base.writeFileSync;
+const baseAppendFileSync = base.appendFileSync;
+const baseReaddirSync = base.readdirSync;
+const baseReadFile = base.readFile;
+const baseWriteFile = base.writeFile;
+const baseAppendFile = base.appendFile;
+const baseReaddir = base.readdir;
+const basePromisesReadFile = base.promises.readFile;
+const basePromisesWriteFile = base.promises.writeFile;
+const basePromisesAppendFile = base.promises.appendFile;
+const basePromisesReaddir = base.promises.readdir;
+const maxFileBytes = Number(fsQuota.maxFileBytes) || 0;
+const maxDirEntries = Number(fsQuota.maxDirEntries) || 0;
+
+function quotaError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+function utf8Length(value) {
+  let n = 0;
+  for (let i = 0; i < value.length; i++) {
+    const c = value.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < value.length) { n += 4; i += 1; }
+    else n += 3;
+  }
+  return n;
+}
+
+function dataByteLength(data) {
+  if (typeof data === "string") return utf8Length(data);
+  if (data && typeof data.byteLength === "number") return data.byteLength;
+  if (data && typeof data.length === "number") return data.length;
+  return 0;
+}
+
+function encodingOf(options) {
+  if (typeof options === "string") return options;
+  if (options && typeof options === "object" && typeof options.encoding === "string") return options.encoding;
+  return undefined;
+}
+
+function checkFileSize(size) {
+  if (maxFileBytes > 0 && size > maxFileBytes) {
+    throw quotaError("EFBIG", "文件超过 MaxFileBytes(" + maxFileBytes + ")");
+  }
+}
+
+function checkReadData(data, options) {
+  if (maxFileBytes > 0) {
+    const size = typeof data === "string" ? utf8Length(data) : data.length;
+    checkFileSize(size);
+  }
+  return data;
+}
+
+function checkWriteData(path, data, append) {
+  if (maxFileBytes <= 0) return;
+  const add = dataByteLength(data);
+  let size = add;
+  if (append) {
+    try { size = base.statSync(path).size + add; } catch (_) { size = add; }
+  }
+  checkFileSize(size);
+}
+
+function checkDirList(list) {
+  if (maxDirEntries > 0 && list.length > maxDirEntries) {
+    throw quotaError("EFBIG", "目录条目超过 MaxDirEntries(" + maxDirEntries + ")");
+  }
+  return list;
+}
+
+export function readFileSync(path, options) {
+  return checkReadData(baseReadFileSync(path, options), options);
+}
+
+export function writeFileSync(path, data, options) {
+  checkWriteData(path, data, false);
+  return baseWriteFileSync(path, data, options);
+}
+
+export function appendFileSync(path, data, options) {
+  checkWriteData(path, data, true);
+  return baseAppendFileSync(path, data, options);
+}
+
+export function readdirSync(path, options) {
+  return checkDirList(baseReaddirSync(path, options));
+}
+
+export function readFile(path, options, callback) {
+  let opts = options;
+  let cb = callback;
+  if (typeof opts === "function") {
+    cb = opts;
+    opts = undefined;
+  }
+  if (typeof cb !== "function") throw quotaError("ERR_INVALID_ARG_TYPE", "readFile 需要 callback");
+  baseReadFile(path, opts, function (err, data) {
+    if (err) { cb(err); return; }
+    try { checkReadData(data, opts); cb(null, data); } catch (e) { cb(e); }
+  });
+}
+
+export function writeFile(path, data, options, callback) {
+  let opts = options;
+  let cb = callback;
+  if (typeof opts === "function") {
+    cb = opts;
+    opts = undefined;
+  }
+  if (typeof cb !== "function") throw quotaError("ERR_INVALID_ARG_TYPE", "writeFile 需要 callback");
+  try {
+    checkWriteData(path, data, false);
+  } catch (e) {
+    cb(e);
+    return;
+  }
+  baseWriteFile(path, data, opts, cb);
+}
+
+export function appendFile(path, data, options, callback) {
+  let opts = options;
+  let cb = callback;
+  if (typeof opts === "function") {
+    cb = opts;
+    opts = undefined;
+  }
+  if (typeof cb !== "function") throw quotaError("ERR_INVALID_ARG_TYPE", "appendFile 需要 callback");
+  try {
+    checkWriteData(path, data, true);
+  } catch (e) {
+    cb(e);
+    return;
+  }
+  baseAppendFile(path, data, opts, cb);
+}
+
+export function readdir(path, options, callback) {
+  let opts = options;
+  let cb = callback;
+  if (typeof opts === "function") {
+    cb = opts;
+    opts = undefined;
+  }
+  if (typeof cb !== "function") throw quotaError("ERR_INVALID_ARG_TYPE", "readdir 需要 callback");
+  baseReaddir(path, opts, function (err, list) {
+    if (err) { cb(err); return; }
+    try { checkDirList(list); cb(null, list); } catch (e) { cb(e); }
+  });
+}
+// 默认导入拿到的是 base 对象；把核心配额包装也挂上去，否则 `import fs` 绕过。
+const coreQuota = {
+  readFileSync,
+  writeFileSync,
+  appendFileSync,
+  readdirSync,
+  readFile,
+  writeFile,
+  appendFile,
+  readdir,
+};
+for (const name of Object.keys(coreQuota)) attach(base, name, coreQuota[name]);
+
+async function quotaPromisesReadFile(path, options) {
+  const data = await basePromisesReadFile(path, options);
+  if (maxFileBytes > 0) {
+    const size = typeof data === "string" ? utf8Length(data) : data.length;
+    checkFileSize(size);
+  }
+  return data;
+}
+async function quotaPromisesWriteFile(path, data, options) {
+  checkWriteData(path, data, false);
+  return basePromisesWriteFile(path, data, options);
+}
+async function quotaPromisesAppendFile(path, data, options) {
+  checkWriteData(path, data, true);
+  return basePromisesAppendFile(path, data, options);
+}
+async function quotaPromisesReaddir(path, options) {
+  return checkDirList(await basePromisesReaddir(path, options));
+}
+attach(base.promises, "readFile", quotaPromisesReadFile);
+attach(base.promises, "writeFile", quotaPromisesWriteFile);
+attach(base.promises, "appendFile", quotaPromisesAppendFile);
+attach(base.promises, "readdir", quotaPromisesReaddir);

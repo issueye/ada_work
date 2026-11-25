@@ -23,7 +23,7 @@ const p = path.join("/workspace", "out.txt")
 
 | 模块 | 来源 | 说明 |
 |---|---|---|
-| `node:fs` | moejs `node` 包 + 宿主补齐层 | 根固定为 `/workspace`;同步与回调形状可用;`mkdtemp`/`symlink`/`link`/`chmod`/`chown`/`truncate`/`utimes` 由宿主补齐(§3.1,三形态);fd 族与文件流见 §3.2;`FileHandle`/`opendir` 见 §3.3,`watch` 不提供(ADR 0016) |
+| `node:fs` | moejs `node` 包 + 宿主补齐层 | 根固定为 `/workspace`;同步与回调形状可用;`mkdtemp`/`symlink`/`link`/`chmod`/`chown`/`truncate`/`utimes` 由宿主补齐(§3.1,三形态);fd 族与文件流见 §3.2;`FileHandle`/`opendir` 见 §3.3;`watch` 在 LoopResident + `FSPermission.Watch` 下轮询(ADR 0016 修订) |
 | `node:fs/promises` | moejs `node` 包 | 同上;真异步:promise 由事件循环驱动,`await` 之后文件已落盘 |
 | `node:buffer` | moejs `node` 包 | 同时安装全局 `Buffer` |
 | `node:path` | `ada_jsrt/jsrt/nodemods` | posix 算法;裸名 `path` 同实例 |
@@ -106,8 +106,8 @@ moejs 的 `node` 包只实现了一部分 `node:fs`;常用但缺失的元数据�
 - 与 moejs 的实现一样,**这些写入不经过 `fs-local` 的原子写/版本守卫,也不产生
   `fs-redact`/`fs-observe` 事件**;要策略保护请用 `ada:fs`(走 fs Chain);
 - 补齐覆盖**一次操作**(上面的元数据类)与**跨调用句柄**(下面的 fd 族);
-  仍缺的是目录句柄与事件:`opendir`/`Dir`、`watch`/`watchFile`、`statfs`、
-  `openAsBlob`、`readv`/`writev`。
+  仍缺的是 `statfs`、`openAsBlob`、`readv`/`writev` 的部分边界;
+  `opendir`/`Dir` 与 `watch`/`watchFile` 已提供(后者需 LoopResident + Watch)。
 
 ### 3.2 文件描述符族与文件流
 
@@ -154,11 +154,12 @@ moejs 的 `node` 包只实现了一部分 `node:fs`;常用但缺失的元数据�
 `isFile()`/`isDirectory()`/`isSymbolicLink()`(其余 `is*` 恒 false:宿主只区分这三类)。
 目录本身也是一个 fd,同样受"运行时关闭时统一回收"的保护。
 
-**`watch` / `watchFile` / `unwatchFile`**:**不提供**,调用即抛 `ERR_NOT_SUPPORTED`。
-原因与替代路径见 [ADR 0016](adr/0016-no-fs-watch.md):文件变更通知需要
-「没有调用时也能把事件送进 JS」,与 ADR 0014 的调用边界模型冲突;宿主也没有跨平台
-通知后端(引入 `fsnotify` 需要新依赖 + ADR)。
-需要监视变更时:写 Go 插件 + `ctx.emit("fs/changed", ...)`,`platform/sched` 做周期检查。
+**`watch` / `watchFile` / `unwatchFile`**:**在 `LoopResident` + `FSPermission.Watch` 下提供**,
+后端是 JS 轮询(默认 500ms,可传 `{ interval }`),不引入 `fsnotify`;Scoped 下仍抛
+`ERR_NOT_SUPPORTED`。`fs.watch` 发 `change/rename`;`fs.watchFile` 回调提供
+`curr/prev` 的最小 Stats 视图;`unwatchFile` 停止监听。原因、风险与回滚见
+[ADR 0016](adr/0016-no-fs-watch.md) 的 2026-11-26 修订。
+周期任务仍优先用 `platform/sched` 或 Go 插件 + `ctx.emit("fs/changed", ...)`。
 
 ## 4. 宿主信息
 `node:os` 读取 `globalThis.__adaOSInfo`:
@@ -286,7 +287,7 @@ go test ./platform/bridge -run 'NodeBuiltins|NodeHTTP|NodeZlib|NodeChild|JSShell
 (cd ../ada_jsrt; go test ./jsrt -run 'NodeFSExt')          # node:fs 补齐 API 的三形态与错误码
 (cd ../ada_jsrt; go test ./jsrt -run 'TestNodeTimers|TestNodeStream|TestNodeReadline|TestNodePerfHooks|TestNodeTty')
 (cd ../ada_jsrt; go test ./jsrt -run 'TestNodeCrypto')     # 摘要/HMAC/PBKDF2 向量与随机、定长比较
-(cd ../ada_jsrt; go test ./jsrt -run 'TestNodeFS')        # fd 族 / 文件流 / FileHandle / Dir / watch 拒绝
+(cd ../ada_jsrt; go test ./jsrt -run 'TestNodeFS')        # fd 族 / 文件流 / FileHandle / Dir / watch 轮询
 ```
 
 `TestNodeBuiltins` 覆盖:

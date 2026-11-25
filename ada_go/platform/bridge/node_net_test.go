@@ -90,7 +90,7 @@ import net from "node:net"
 
 type Ctx = { provide: (name: string, value: unknown) => void }
 
-export function apply(ctx: Ctx) {
+export async function apply(ctx: Ctx) {
   const out = {}
   let body = ""
   http.get(%q, (res) => {
@@ -112,8 +112,11 @@ export function apply(ctx: Ctx) {
 
   out.lookup = dns.lookupSync("localhost")
   out.lookupCb = ""
-  dns.lookup("localhost", (err, address, family) => {
-    out.lookupCb = err ? "err" : address + "/" + family
+  await new Promise<void>((resolve) => {
+    dns.lookup("localhost", (err, address, family) => {
+      out.lookupCb = err ? "err" : address + "/" + family
+      resolve()
+    })
   })
 
   out.ip4 = net.isIP("127.0.0.1")
@@ -121,11 +124,17 @@ export function apply(ctx: Ctx) {
   out.ipBad = net.isIP("999.1.1.1")
   out.ipv4 = net.isIPv4("10.0.0.1")
 
-  const sock = net.connect(%q, %q)
-  sock.write("PING")
-  const reply = sock.read(16)
-  out.reply = reply === null ? "" : reply.toString()
-  sock.end()
+  out.reply = ""
+  await new Promise<void>((resolve, reject) => {
+    const sock = net.connect(%q, %q)
+    sock.on("connect", () => sock.write("PING"))
+    sock.on("data", (chunk: any) => {
+      out.reply = chunk.toString()
+      sock.end()
+      resolve()
+    })
+    sock.on("error", reject)
+  })
 
   try {
     http.createServer()

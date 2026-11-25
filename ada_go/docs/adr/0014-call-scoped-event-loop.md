@@ -2,7 +2,7 @@
 
 > 迁移说明(2026-11-25):执行层的 `compile`/`jsrt` 已抽到同级独立库 **ada_jsrt**;下文路径中的 `platform/jsrt` 现位于该库的 `jsrt` 包,决策与行为不变。
 
-- 状态:已接受
+- 状态:已修订(2026-11-26,新增可选 `LoopResident`)
 - 日期:2026-11-24
 - 复议日期:2027-03-31
 - 相关:[event-loop.md](../event-loop.md)、[m2-execution.md](../m2-execution.md)、[node-compat.md](../node-compat.md)、AGENTS §0 红线 1/7、§2.2、§5.3
@@ -87,3 +87,24 @@ moejs 已经提供了完整的 `eventloop` 包(`Loop.Run/Start/Interrupt/Termina
 2. `node:fs` 的 `FSOptions.Allow`(每次访问判定)是否可以接到 fs seam 的装饰器链上,
    从而消掉"有策略时不能用 node:fs"的限制;
 3. 每次调用的 `Loop.Run` 开销是否仍在预算内(`scripts/bench.ps1`)。
+
+## 7. 修订(2026-11-26):新增显式 `LoopResident`
+
+> 本节修订上文「不后台常驻」的绝对表述，但保留其作为**默认模型**。
+
+`ada_jsrt` 新增 `Options.Mode`：
+
+- `LoopScoped`（默认）：上文所有约束不变——一次调用一次 `Run`，结算即清理未等待的定时器；
+- `LoopResident`：显式 opt-in。`loop.Start()` + 永久 `Hold`，支持跨调用定时器、
+  `net.createServer`、`http.createServer`、`tls.createServer` 与 `fs.watch/watchFile`；
+  `Call` 通过 `callMu` 串行，避免并发调用同时改写 `callCtx`。
+
+风险与边界：
+
+- Resident 下没有宿主调用的后台回调使用 `context.Background()`，宿主应在装配时把
+  FS/Net/Child/Env 权限、`ExitPolicy` 与 `OnEvent` 收紧到该长期运行时的最小集合；
+- 服务端与 watch 只在 Resident 可用；Scoped 仍明确 `ERR_NOT_SUPPORTED`；
+- `Close` 会终止循环并清理连接、监听器、watch 与 zlib 流句柄；
+- 如需回滚，保持 `Mode` 零值即可回到本文原来的调用边界模型。
+
+修订没有改变 `LoopScoped` 的默认行为，也没有改变 ADR 0004/0007 的依赖与预算结论。

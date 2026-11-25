@@ -2,7 +2,7 @@
 
 > 迁移说明(2026-11-25):执行层的 `compile`/`jsrt` 已抽到同级独立库 **ada_jsrt**;下文路径中的 `platform/jsrt` 现位于该库的 `jsrt` 包,决策与行为不变。
 
-- 状态:已接受
+- 状态:已修订(2026-11-26,`fs.watch/watchFile` 在 LoopResident 下实现)
 - 日期:2026-11-24
 - 复议日期:2027-06-30
 - 相关:[node-compat.md](../node-compat.md)、[event-loop.md](../event-loop.md)、[ADR 0014](0014-call-scoped-event-loop.md)、AGENTS §0 红线 6 与 §0.1
@@ -67,3 +67,24 @@ AGENTS §12 的「新的第三方依赖」,需要单独 ADR。
 2. 是否有产品需求必须让 JS 插件在没有调用时收到文件事件?若有,是否接受为此重开
    ADR 0014 的后台循环?
 3. `fsnotify` 的跨平台行为与许可证是否可接受(需要单独 ADR)?
+
+## 8. 修订(2026-11-26):在 LoopResident 下提供轮询 watch
+
+> 本节修订上文的「不实现」结论；ADR 0014 的调用边界仍是默认模式。
+
+`ada_jsrt` 新增 `Options.Mode = LoopResident` 后，`fs.watch/watchFile/unwatchFile` 具备
+可运行的实现：
+
+- **仅 Resident 可用**：Scoped 下仍返回 `ERR_NOT_SUPPORTED`，不伪装事件；
+- **权限**：必须显式开启 `FSPermission.Watch`，并复用路径读权限检查；
+- **后端**：JS 侧轮询（默认 500ms，可传 `{ interval }`），不引入 `fsnotify`，因此没有新依赖；
+- **语义**：`fs.watch` 发出 `change/rename`；`fs.watchFile` 回调提供 `curr/prev` 的
+  最小 Stats 视图；`unwatchFile` 停止监听；
+- **生命周期**：watch 定时器挂在 Resident 循环上，运行时 `Close` 时随连接/监听器一起清理。
+
+这解决的是「需要跨调用文件通知」的真实需求；它不改变 Scoped 的默认授权面。
+替代路径仍然有效：对长周期任务优先用 Go 插件 + `ctx.emit("fs/changed", ...)` 或
+`platform/sched`，轮询 watch 只用于 JS 侧需要 Node 形状的场景。
+
+回滚方式：把 `fs.watch/watchFile` 恢复为 `ERR_NOT_SUPPORTED`，保留 Resident 的
+网络服务端能力即可；两者没有代码层面的强耦合。

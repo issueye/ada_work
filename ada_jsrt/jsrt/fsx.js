@@ -8,7 +8,9 @@
 // 为什么形态在 JS、操作在 Go:形态是纯编排;真正的文件操作必须由宿主用 os.Root 做,
 // 路径才不会越出工作区(与 moejs 自带的 node:fs 同一条边界),也才能复用写权限开关。
 // 这一层只负责把宿主的结果包成 Node 的形状与错误码。
+import base from "ada:nodefs";
 import { Buffer } from "node:buffer";
+import { EventEmitter } from "node:events";
 import { Readable, Writable } from "node:stream";
 
 const host = globalThis.__adaHost;
@@ -473,7 +475,7 @@ export function writev(fd, buffers, position, cb) {
 // —— 文件流 ——
 //
 // 两个流都建立在 fd 族之上:读按块 await,写按块 await,结束时关句柄。
-// 注意:Readable.from 的回压只在缓冲层面(没有跨块暂停),大文件会被整段读进内存;
+// 注意:Readable.from 现在按字节高水位拉取，消费端慢时会停止预读；
 // 需要分块消费时用 for await 逐块处理,而不是一次 .on("data") 全收。
 
 // readStreamFrom 用「打开句柄」的闭包构造可读流:
@@ -539,7 +541,7 @@ function readStreamFrom(openFd, options, ownsFD) {
   iterable[Symbol.asyncIterator] = function () {
     return iterable;
   };
-  const stream = Readable.from(iterable, { highWaterMark: chunkSize });
+  const stream = Readable.from(iterable, { highWaterMark: chunkSize, objectMode: false });
   stream.on("close", closeQuiet);
   stream.on("error", closeQuiet);
   return stream;
@@ -1162,26 +1164,236 @@ promises.opendir = function opendir(path, options) {
   });
 };
 
-// —— watch:如实拒绝 ——
+// —— watch:Resident 下的轮询实现 ——
 //
-// 文件变更通知需要「没有调用时也能把事件送进 JS」,这与 ADR 0014 的调用边界模型
-// 冲突;而且宿主没有跨平台通知后端(引入 fsnotify 需要新依赖 + ADR)。
-// 需要监视变更时:用 Go 插件 + 事件,或 platform/sched 的周期任务。
+// Node 的 fs.watch 需要后台事件循环；Scoped 模式下会挂住调用边界，因此要求
+// LoopResident。后端是轮询（默认 500ms）：没有 fsnotify 依赖，语义是
+// "change/rename"，不保证即时性与事件合并细节。
+
+function baseName(p) {
+  const text = String(p).replace(/\\/g, "/").replace(/\/+$/, "");
+  const i = text.lastIndexOf("/");
+  return i >= 0 ? text.slice(i + 1) : text;
+}
+
+function statSig(st) {
+  const mtime = st.mtimeMs !== undefined ? st.mtimeMs : st.mtime && typeof st.mtime.getTime === "function" ? st.mtime.getTime() : 0;
+  return String(mtime) + ":" + String(st.size);
+}
+
+function watchSnapshot(p) {
+  const st = base.statSync(p);
+  if (typeof st.isDirectory === "function" && st.isDirectory()) {
+    const entries = new Map();
+    const dir = String(p).replace(/\/+$/, "");
+    for (const name of base.readdirSync(p)) {
+      const key = typeof name === "string" ? name : name.name;
+      try {
+        entries.set(key, statSig(base.statSync(dir + "/" + key)));
+      } catch (_) {
+        entries.set(key, "");
+      }
+    }
+    return { dir: true, entries };
+  }
+  return { dir: false, sig: statSig(st) };
+}
+
+function watchChanges(last, current, p) {
+  const changes = [];
+  if (last === null || last.dir !== current.dir) {
+    changes.push(["rename", baseName(p)]);
+    return changes;
+  }
+  if (current.dir) {
+    for (const [name, sig] of current.entries) {
+      if (!last.entries.has(name)) changes.push(["rename", name]);
+      else if (last.entries.get(name) !== sig) changes.push(["change", name]);
+    }
+    for (const name of last.entries.keys()) {
+      if (!current.entries.has(name)) changes.push(["rename", name]);
+    }
+    return changes;
+  }
+  if (last.sig !== current.sig) changes.push(["change", baseName(p)]);
+  return changes;
+}
+
+export class FSWatcher extends EventEmitter {
+  constructor() {
+    super();
+    this._closed = false;
+    this._timer = null;
+    this._closeFn = null;
+  }
+
+  close() {
+    if (this._closed) return;
+    this._closed = true;
+    if (typeof this._closeFn === "function") this._closeFn();
+    this.emit("close");
+  }
+
+  ref() {
+    if (this._timer && typeof this._timer.ref === "function") this._timer.ref();
+    return this;
+  }
+
+  unref() {
+    if (this._timer && typeof this._timer.unref === "function") this._timer.unref();
+    return this;
+  }
+}
 
 function watchUnsupported(api) {
-  const err = new Error(api + " 不提供:文件变更通知需要后台事件循环与跨平台通知后端,见 ADR 0016");
+  const err = new Error(api + " 不提供:请使用 fs.watch（需要 LoopResident）");
   err.code = "ERR_NOT_SUPPORTED";
   return err;
 }
 
-export function watch() {
-  throw watchUnsupported("fs.watch");
+export function watch(filename, options, listener) {
+  if (typeof options === "function") {
+    listener = options;
+    options = {};
+  }
+  const p = pathOf(filename, "filename");
+  const opts = options || {};
+  if (globalThis.__adaResident !== true) {
+    const err = new Error("fs.watch 需要 LoopResident");
+    err.code = "ERR_NOT_SUPPORTED";
+    throw err;
+  }
+  if (!host || !host.fsx || typeof host.fsx.watchCheck !== "function") {
+    const err = new Error("fs.watch 不可用:宿主没有安装 watch 检查");
+    err.code = "ERR_ACCESS_DENIED";
+    throw err;
+  }
+  try {
+    host.fsx.watchCheck(p);
+  } catch (cause) {
+    const err = new Error("fs.watch 被拒绝: " + (cause && cause.message ? cause.message : String(cause)));
+    err.code = "ERR_ACCESS_DENIED";
+    throw err;
+  }
+
+  const watcher = new FSWatcher();
+  const interval = Number(opts.interval) > 0 ? Math.max(10, Number(opts.interval)) : 500;
+  let last = null;
+  try {
+    last = watchSnapshot(p);
+  } catch (_) {}
+  const timer = setInterval(function () {
+    let current;
+    try {
+      current = watchSnapshot(p);
+    } catch (_) {
+      if (last !== null) {
+        last = null;
+        watcher.emit("change", "rename", baseName(p));
+      }
+      return;
+    }
+    const changes = watchChanges(last, current, p);
+    last = current;
+    for (const item of changes) watcher.emit("change", item[0], item[1]);
+  }, interval);
+  if (opts.persistent === false && timer && typeof timer.unref === "function") timer.unref();
+  watcher._timer = timer;
+  watcher._closeFn = function () {
+    try { clearInterval(timer); } catch (_) {}
+  };
+  if (typeof listener === "function") watcher.on("change", listener);
+  return watcher;
 }
 
-export function watchFile() {
-  throw watchUnsupported("fs.watchFile");
+const watchFileEntries = new Map();
+
+function statView(st) {
+  if (!st) return null;
+  const mtime = st.mtimeMs !== undefined ? st.mtimeMs : st.mtime && typeof st.mtime.getTime === "function" ? st.mtime.getTime() : 0;
+  return {
+    size: st.size,
+    mtimeMs: mtime,
+    mtime: st.mtime,
+    atime: st.atime,
+    ctime: st.ctime,
+    mode: st.mode,
+    ino: st.ino,
+    isFile: function () { return typeof st.isFile === "function" ? st.isFile() : !st.isDirectory(); },
+    isDirectory: function () { return typeof st.isDirectory === "function" ? st.isDirectory() : false; },
+    isSymbolicLink: function () { return false; },
+  };
 }
 
-export function unwatchFile() {
-  throw watchUnsupported("fs.unwatchFile");
+export function watchFile(filename, options, listener) {
+  if (typeof options === "function") {
+    listener = options;
+    options = {};
+  }
+  const p = pathOf(filename, "filename");
+  const opts = options || {};
+  if (typeof listener !== "function") {
+    const err = new TypeError("fs.watchFile 需要 listener");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (globalThis.__adaResident !== true) {
+    const err = new Error("fs.watchFile 需要 LoopResident");
+    err.code = "ERR_NOT_SUPPORTED";
+    throw err;
+  }
+  if (!host || !host.fsx || typeof host.fsx.watchCheck !== "function") {
+    const err = new Error("fs.watchFile 不可用:宿主没有安装 watch 检查");
+    err.code = "ERR_ACCESS_DENIED";
+    throw err;
+  }
+  try {
+    host.fsx.watchCheck(p);
+  } catch (cause) {
+    const err = new Error("fs.watchFile 被拒绝: " + (cause && cause.message ? cause.message : String(cause)));
+    err.code = "ERR_ACCESS_DENIED";
+    throw err;
+  }
+
+  const interval = Number(opts.interval) > 0 ? Math.max(10, Number(opts.interval)) : 500;
+  const entry = { path: p, listener: listener, timer: null, last: null };
+  try {
+    entry.last = statView(base.statSync(p));
+  } catch (_) {}
+  entry.timer = setInterval(function () {
+    let current = null;
+    try {
+      current = statView(base.statSync(p));
+    } catch (_) {}
+    const previous = entry.last;
+    const changed =
+      (previous === null) !== (current === null) ||
+      (current !== null && previous !== null && (current.mtimeMs !== previous.mtimeMs || current.size !== previous.size));
+    if (changed) {
+      entry.last = current;
+      try { listener(current, previous); } catch (_) {}
+    }
+  }, interval);
+  if (opts.persistent === false && entry.timer && typeof entry.timer.unref === "function") entry.timer.unref();
+  let list = watchFileEntries.get(p);
+  if (!list) {
+    list = [];
+    watchFileEntries.set(p, list);
+  }
+  list.push(entry);
+}
+
+export function unwatchFile(filename, listener) {
+  const p = pathOf(filename, "filename");
+  const list = watchFileEntries.get(p) || [];
+  const keep = [];
+  for (const entry of list) {
+    if (typeof listener === "function" && entry.listener !== listener) {
+      keep.push(entry);
+      continue;
+    }
+    try { clearInterval(entry.timer); } catch (_) {}
+  }
+  if (keep.length > 0) watchFileEntries.set(p, keep);
+  else watchFileEntries.delete(p);
 }

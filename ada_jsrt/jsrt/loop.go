@@ -16,7 +16,7 @@ import (
 	"github.com/MoeForge/moejs/eventloop"
 )
 
-//go:embed boot.js boot_timers.js fsx.js node_fs.js node_fs_promises.js
+//go:embed boot.js boot_timers.js prelude.js fsx.js node_fs.js node_fs_promises.js
 var bootFS embed.FS
 
 const (
@@ -100,10 +100,40 @@ func (r *Runtime) newLoop(raw *moejs.Runtime) (*eventloop.Loop, error) {
 
 // onLoopError 是事件循环的回调错误出口;只在循环 goroutine 上被调用。
 func (r *Runtime) onLoopError(err error) {
-	if r.opts.Logf == nil {
+	if r.opts.Logf != nil {
+		r.opts.Logf("jsrt: 事件循环回调异常(不影响当前调用): %v", err)
+	}
+	r.emitEvent(Event{Kind: "uncaught_exception", Err: err})
+	r.mu.Lock()
+	raw := r.raw
+	r.mu.Unlock()
+	if raw != nil {
+		msg := strings.TrimPrefix(err.Error(), "Error: ")
+		obj := raw.Realm().NewError(engine.KindError, "%s", msg)
+		r.emitProcess("uncaughtException", engine.ObjectValue(obj))
+	}
+}
+
+// emitProcess 把事件投递给 JS 的 process 事件表（若 process 模块已加载）。
+func (r *Runtime) emitProcess(name string, value engine.Value) {
+	r.mu.Lock()
+	raw := r.raw
+	r.mu.Unlock()
+	if raw == nil {
 		return
 	}
-	r.opts.Logf("jsrt: 事件循环回调异常(不影响当前调用): %v", err)
+	realm := raw.Realm()
+	fn, err := realm.Global.GetProp(realm, realm.KeyFromGoString("__adaProcessEmit"))
+	if err != nil || !engine.IsCallable(fn) {
+		return
+	}
+	nameVal, err := raw.FromGo(name)
+	if err != nil {
+		return
+	}
+	if _, err := realm.Call(fn, engine.Undefined(), []engine.Value{nameVal, value}); err != nil && r.opts.Logf != nil {
+		r.opts.Logf("jsrt: process.%s 监听器异常: %v", name, err)
+	}
 }
 
 // returnConvError 表示调用结果无法转成 Go 值。

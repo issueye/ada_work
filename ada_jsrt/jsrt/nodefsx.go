@@ -20,6 +20,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -54,22 +55,27 @@ type fsxResult struct {
 //
 // 只在装配期调用一次;Root 本身可以并发使用,所以异步操作直接在 goroutine 里用它。
 func (r *Runtime) openNodeRoot() error {
-	n := r.opts.Node
-	if n == nil || n.FS == nil || strings.TrimSpace(n.FS.Root) == "" {
+	fs := r.fsPerm
+	if !fs.Enabled || strings.TrimSpace(fs.Root) == "" {
 		return nil
 	}
-	root, err := os.OpenRoot(n.FS.Root)
+	abs, err := filepath.Abs(fs.Root)
+	if err != nil {
+		return fmt.Errorf("jsrt: 解析 node:fs 根失败: %w", err)
+	}
+	root, err := os.OpenRoot(abs)
 	if err != nil {
 		return fmt.Errorf("jsrt: 打开 node:fs 根失败: %w", err)
 	}
-	mount := n.FS.Mount
+	mount := fs.Mount
 	if mount == "" {
 		mount = "/workspace"
 	}
 	r.mu.Lock()
 	r.nodeRoot = root
+	r.nodeHostRoot = abs
 	r.nodeMount = mount
-	r.nodeWrite = n.FS.Write
+	r.nodeWrite = fs.Access == FSReadWrite
 	r.mu.Unlock()
 	return nil
 }
@@ -197,10 +203,14 @@ func (r *Runtime) fsxDo(op, argsJSON string) string {
 	value, err := r.fsxRun(op, argsJSON)
 	res := fsxResult{}
 	if err != nil {
+		var pe *PermissionError
 		var fe *fsxError
-		if errors.As(err, &fe) {
+		switch {
+		case errors.As(err, &pe):
+			res.Code, res.Path, res.Message = pe.Code, pe.Resource, pe.Error()
+		case errors.As(err, &fe):
 			res.Code, res.Path, res.Message = fe.Code, fe.Path, fe.Message
-		} else {
+		default:
 			res.Code, res.Message = "EIO", err.Error()
 		}
 	} else {
@@ -223,6 +233,9 @@ func (r *Runtime) fsxRun(op, argsJSON string) (any, error) {
 	args, err := decodeFSXArgs(argsJSON)
 	if err != nil {
 		return nil, fsxErrf("EINVAL", "", "参数不是合法 JSON: %v", err)
+	}
+	if err := r.checkFSXPermission(op, args); err != nil {
+		return nil, err
 	}
 	// 会改文件系统状态的操作:只读工作区一律 EROFS。
 	// open 不在这里判断——它是否允许写取决于 flags(见 fsxOpen)。
@@ -477,6 +490,9 @@ func (r *Runtime) fsxTruncate(root *os.Root, args []any) error {
 	if size < 0 {
 		return fsxErrf("EINVAL", p, "len 不能为负")
 	}
+	if max := r.fsMaxFileBytes(); max > 0 && size > max {
+		return fsxErrf("EFBIG", p, "truncate 超过 MaxFileBytes(%d)", max)
+	}
 	rel, err := r.nodeRel(p)
 	if err != nil {
 		return err
@@ -546,4 +562,160 @@ func fsxNodeError(err error, p string) error {
 		code = "EINVAL"
 	}
 	return fsxErrf(code, p, "%s", err.Error())
+}
+
+// checkFSXPermission 在补齐层执行前做路径级权限检查。
+//
+// 只在启用新的 Permissions.FS 时生效；旧的 Node.FS 保持原有行为。
+// 带路径的操作按 read/write 检查；没有路径的 fd 操作只校验整体写权限，
+// 因为打开 fd 时已经检查过路径。
+func (r *Runtime) checkFSXPermission(op string, args []any) error {
+	if !r.fsEnforce || r.fsPolicy == nil {
+		return nil
+	}
+	vpath, write, hasPath := fsxPermissionTarget(op, args)
+	opName := "read"
+	if write {
+		opName = "write"
+	}
+	var err error
+	switch {
+	case hasPath && vpath != "":
+		// fsx 的路径是未解析的虚拟路径；先解析符号链接，再做权限判定，
+		// 避免「允许的链接目录指向被拒绝目录」绕过 Allow/Deny。
+		resolved, rerr := r.resolveFSXVirtual(vpath)
+		if rerr != nil {
+			r.emitEvent(Event{
+				Kind: "permission", Err: rerr, Scope: "fs", Op: opName,
+				Resource: vpath, Allowed: false,
+			})
+			return rerr
+		}
+		vpath = resolved
+		err = r.fsPolicy.check(opName, resolved)
+	case write:
+		err = r.fsPolicy.checkAccess("write")
+	}
+	if err != nil {
+		r.emitEvent(Event{
+			Kind: "permission", Err: err, Scope: "fs", Op: opName,
+			Resource: vpath, Allowed: false,
+		})
+	}
+	return err
+}
+
+// fsxPermissionTarget 给出一次 fsx 操作要检查的虚拟路径与读写类型。
+//
+// 返回 hasPath=false 表示该操作没有路径（fd 族），由调用方决定是否校验
+// 整体写权限；返回 write=true 表示会改变文件系统。
+func fsxPermissionTarget(op string, args []any) (vpath string, write, hasPath bool) {
+	str := func(i int) (string, bool) {
+		if i >= len(args) {
+			return "", false
+		}
+		s, ok := args[i].(string)
+		return s, ok
+	}
+	switch op {
+	case "mkdtemp", "chmod", "chown", "truncate", "utimes":
+		p, ok := str(0)
+		return p, true, ok
+	case "symlink", "link":
+		p, ok := str(1)
+		return p, true, ok
+	case "open":
+		p, ok := str(0)
+		if !ok {
+			return "", false, false
+		}
+		flags, _ := str(1)
+		return p, strings.ContainsAny(flags, "wa+"), true
+	case "opendir":
+		p, ok := str(0)
+		return p, false, ok
+	case "write", "writev", "ftruncate", "fchmod", "fchown", "futimes", "fsync":
+		return "", true, false
+	case "read", "readv", "fstat":
+		return "", false, false
+	default:
+		return "", false, false
+	}
+}
+
+// resolveFSXVirtual 把虚拟路径中的符号链接解析到根内的真实位置，再换回虚拟路径。
+//
+// fsx 的检查发生在其 Go 操作之前；moejs 核心 fs 的 Allow 已经是解析后的路径。
+// 这里做同样的解析，避免「/workspace/allowed/link -> /workspace/secret」这类
+// 链接绕过 Allow/Deny。解析失败（路径尚不存在）时退化为解析父目录。
+func (r *Runtime) resolveFSXVirtual(v string) (string, error) {
+	if r.fsPolicy == nil {
+		return v, nil
+	}
+	clean, err := r.fsPolicy.virtual(v)
+	if err != nil {
+		return "", err
+	}
+	mount := r.fsPolicy.perm.Mount
+	r.mu.Lock()
+	rootDir, runtimeMount := r.nodeHostRoot, r.nodeMount
+	r.mu.Unlock()
+	if runtimeMount != "" {
+		mount = runtimeMount
+	}
+	if rootDir == "" {
+		return clean, nil
+	}
+	if clean != mount && !strings.HasPrefix(clean, mount+"/") {
+		// 交给 check 统一报「不在 Mount 内」。
+		return clean, nil
+	}
+	rel := "."
+	if clean != mount {
+		rel = strings.TrimPrefix(clean, mount+"/")
+	}
+	host := filepath.Join(rootDir, filepath.FromSlash(rel))
+	resolved, err := filepath.EvalSymlinks(host)
+	if err != nil {
+		parent := filepath.Dir(host)
+		base := filepath.Base(host)
+		if rp, perr := filepath.EvalSymlinks(parent); perr == nil {
+			resolved = filepath.Join(rp, base)
+		} else {
+			resolved = host
+		}
+	}
+	relResolved, err := filepath.Rel(rootDir, resolved)
+	if err != nil || relResolved == ".." || strings.HasPrefix(relResolved, ".."+string(filepath.Separator)) {
+		return "", deny("fs", "read", v, "符号链接越界", "EACCES")
+	}
+	if relResolved == "." {
+		return mount, nil
+	}
+	return path.Join(mount, filepath.ToSlash(relResolved)), nil
+}
+
+// nativeFSXWatchCheck 在 fs.watch 启动前检查 Watch 权限与路径读权限。
+func (r *Runtime) nativeFSXWatchCheck(raw *moejs.Runtime) moejs.NativeFunc {
+	return func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+		if len(args) < 1 {
+			return engine.Undefined(), fmt.Errorf("fsx.watchCheck(path) 需要 path")
+		}
+		p, err := toString(raw, args[0])
+		if err != nil || p == "" {
+			return engine.Undefined(), fsxErrf("EINVAL", "", "watch 路径必须是非空字符串")
+		}
+		if !r.fsPerm.Watch {
+			perr := deny("fs", "watch", p, "Watch 未启用", "ERR_ACCESS_DENIED")
+			r.emitPermission("fs", "watch", p, perr)
+			return engine.Undefined(), perr
+		}
+		if r.fsPolicy != nil {
+			if cerr := r.fsPolicy.check("read", p); cerr != nil {
+				r.emitPermission("fs", "watch", p, cerr)
+				return engine.Undefined(), cerr
+			}
+		}
+		return engine.Undefined(), nil
+	}
 }
