@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -274,5 +276,60 @@ export function apply(ctx: any) {
 	data := raw.(*jsrt.Service).Data()
 	if data["text"] != "secure" || numOf(data["status"]) != 200 {
 		t.Fatalf("https 请求不对: %+v", data)
+	}
+}
+
+// TestNodeTLSConnect 覆盖 node:tls 客户端，验证桥接层真的提供了 Host.TLSDial。
+func TestNodeTLSConnect(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("secure-tls"))
+	}))
+	t.Cleanup(srv.Close)
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, portText, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	script := fmt.Sprintf(`import tls from "node:tls"
+export function apply(ctx: any): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let text = ""
+    const sock = tls.connect({ host: %q, port: %d, rejectUnauthorized: false }, () => {
+      sock.write("GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n")
+    })
+    sock.on("data", (chunk: any) => { text += chunk.toString() })
+    sock.on("end", () => {
+      ctx.provide("tls.probe", { text })
+      resolve()
+    })
+    sock.on("error", reject)
+  })
+}`, host, port, host)
+
+	app := kernel.New(kernel.Options{})
+	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	art := buildArtifact(t, map[string]string{"plugin.ts": script})
+	p, err := bridge.New(bridge.Options{Name: "node-tls", Artifact: art})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mount(t, app, p)
+
+	raw, err := app.Root().Service("tls.probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := raw.(*jsrt.Service).Data()
+	text, _ := data["text"].(string)
+	if !strings.Contains(text, "200") || !strings.Contains(text, "secure-tls") {
+		t.Fatalf("tls.connect 响应不对: %+v", data)
 	}
 }

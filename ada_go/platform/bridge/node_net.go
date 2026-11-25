@@ -398,3 +398,24 @@ func nodeDial(ctx context.Context, network, address string, timeout time.Duratio
 
 // 编译期确认实现了 jsrt 的连接契约。
 var _ jsrt.NetConn = (*nodeNetConn)(nil)
+
+// nodeTLSDial 是 jsrt.Host.TLSDial 的宿主实现：标准库 TLS 客户端。
+// 证书校验默认开启；只有脚本显式 rejectUnauthorized:false 才跳过。
+func nodeTLSDial(ctx context.Context, network, address string, opts jsrt.TLSOptions) (jsrt.NetConn, error) {
+	cfg := &tls.Config{
+		ServerName:         opts.ServerName,
+		InsecureSkipVerify: opts.Insecure, //nolint:gosec // 只在脚本显式 rejectUnauthorized:false 时使用
+		NextProtos:         opts.ALPN,
+	}
+	if cfg.ServerName == "" {
+		if host, _, err := net.SplitHostPort(address); err == nil {
+			cfg.ServerName = host
+		}
+	}
+	dialer := &net.Dialer{Timeout: defaultNetTimeout}
+	conn, err := tls.DialWithDialer(dialer, network, address, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("node:tls 连接 %s 失败: %w", address, err)
+	}
+	return &nodeNetConn{conn: conn}, nil
+}

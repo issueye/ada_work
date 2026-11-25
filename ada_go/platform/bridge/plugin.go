@@ -222,22 +222,26 @@ func (p *Plugin) Provide() []string { return nil }
 // 加载器尚未实现(M3)。
 func (p *Plugin) Config() *schema.Schema { return nil }
 
-// nodeOptions 决定给这个 JS 运行时装哪一层 Node 文件系统。
+// nodeOptions 只保留 Node 模块的白名单开关；文件系统根与权限走新的 Permissions.FS。
+func nodeOptions() *jsrt.NodeOptions {
+	return &jsrt.NodeOptions{Buffer: true}
+}
+
+// nodePermissions 把 fs/workspace 的现有策略翻译成 jsrt 的 FS 权限。
 //
-// node:fs 是宿主直连工作区根的第二条路径;一旦 fs/workspace 链上有策略装饰器,
-// 就不能绕过它们,只保留 node:path / node:os / node:buffer。无策略时开放读写,
-// 让插件可以按 Node 习惯工作,同时仍由 node 包把路径夹在工作区内。
-func nodeOptions(ctx *kernel.Context, fsChain *seamfs.Chain) *jsrt.NodeOptions {
-	opts := &jsrt.NodeOptions{Buffer: true}
+// 规则与旧的 nodeOptions 保持一致：
+//   - fs/workspace 链上有策略时，node:fs 不开放（必须走 ada:fs，避免绕过策略）；
+//   - 没有策略时，以 fs 链的根为 /workspace，读开放，写按 workspace 当前根决定；
+//   - 路径白名单固定为 /workspace/**，不额外放宽。
+func nodePermissions(ctx *kernel.Context, fsChain *seamfs.Chain) jsrt.Permissions {
 	if ctx == nil || fsChain == nil || len(fsChain.Applied()) > 0 {
-		return opts
+		return jsrt.Permissions{}
 	}
 	write := true
 	if v, ok := ctx.TryService(seamworkspace.ServiceName); ok {
 		if ch, ok := v.(*seamworkspace.Chain); ok {
-			// 有 workspace 策略时 node:fs 不能绕过它;没有策略但当前根只读时只装读。
 			if len(ch.Applied()) > 0 {
-				return opts
+				return jsrt.Permissions{}
 			}
 			if svc, err := ch.Get(); err == nil {
 				if info, ierr := svc.Current(ctx.Context()); ierr != nil || info.ReadOnly {
@@ -250,12 +254,20 @@ func nodeOptions(ctx *kernel.Context, fsChain *seamfs.Chain) *jsrt.NodeOptions {
 	}
 	root, err := fsChain.Root(ctx.Context())
 	if err != nil || root == "" {
-		return opts
+		return jsrt.Permissions{}
 	}
-	opts.FS = &jsrt.NodeFSOptions{
-		Root: root, Mount: "/workspace", Cwd: "/workspace", Write: write,
+	access := jsrt.FSReadOnly
+	if write {
+		access = jsrt.FSReadWrite
 	}
-	return opts
+	return jsrt.Permissions{FS: jsrt.FSPermission{
+		Enabled: true,
+		Root:    root,
+		Mount:   "/workspace",
+		Cwd:     "/workspace",
+		Access:  access,
+		Allow:   []string{"/workspace/**"},
+	}}
 }
 
 // Apply 装配 JS 运行时,调用入口模块的 apply(ctx, cfg),再提交暂存的 provide/emit。
@@ -318,10 +330,11 @@ export function has(name) { try { get(name); return true } catch (_err) { return
 	}
 	modules["ada:secrets"] = sm
 	rt, err := jsrt.New(actx, jsrt.Options{
-		Artifact: p.opts.Artifact,
-		Logf:     p.record,
-		Modules:  modules,
-		Node:     nodeOptions(ctx, fsChain),
+		Artifact:    p.opts.Artifact,
+		Logf:        p.record,
+		Modules:     modules,
+		Node:        nodeOptions(),
+		Permissions: nodePermissions(ctx, fsChain),
 		// 注入宿主 OS,供 ada:shell 选择默认 shell(cmd.exe / /bin/sh)。
 		Globals: map[string]any{"__adaOS": runtime.GOOS},
 		Host: jsrt.Host{
@@ -335,6 +348,7 @@ export function has(name) { try { get(name); return true } catch (_err) { return
 			HTTPDo:    nodeHTTPDo,
 			DNSLookup: nodeDNSLookup,
 			NetDial:   nodeDial,
+			TLSDial:   nodeTLSDial,
 			// secret 按名读,走 seam/secrets 链:provider 决定来源,policy 决定授权,
 			// 桥接层不缓存、不写日志,避免 secret 出现在事件或审计里。
 			Secrets: func(sctx context.Context, name string) (string, error) {
