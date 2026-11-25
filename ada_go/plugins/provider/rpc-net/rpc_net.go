@@ -85,12 +85,18 @@ func prepareUnix(path string, opts seamrpc.ListenOptions) error {
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		return seamrpc.Denied("unix socket 目录权限必须 ≤ 0700: " + dir)
 	}
+	if runtime.GOOS != "windows" && !ownedByCurrentUser(info) {
+		return seamrpc.Denied("unix socket 目录不属于当前用户: " + dir)
+	}
 	if li, err := os.Lstat(path); err == nil {
 		if li.Mode()&os.ModeSymlink != 0 || li.Mode()&os.ModeSocket == 0 {
 			return seamrpc.Invalid("路径已存在且不是 socket: " + path)
 		}
 		if !opts.RemoveStale {
 			return seamrpc.Invalid("socket 已存在(未允许清理): " + path)
+		}
+		if runtime.GOOS != "windows" && !ownedByCurrentUser(li) {
+			return seamrpc.Denied("stale socket 不属于当前用户: " + path)
 		}
 		if err := os.Remove(path); err != nil {
 			return seamrpc.Unavailable("清理 stale socket 失败: " + err.Error())

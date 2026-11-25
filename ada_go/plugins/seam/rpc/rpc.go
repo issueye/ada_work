@@ -73,6 +73,11 @@ func Parse(raw string) (Address, error) {
 		if !strings.HasPrefix(name, "/") {
 			return Address{}, Invalid("unix 地址必须是绝对路径: " + raw)
 		}
+		for _, part := range strings.Split(name, "/") {
+			if part == ".." {
+				return Address{}, Invalid("unix 地址不能包含 ..: " + raw)
+			}
+		}
 	case Pipe:
 		if strings.ContainsAny(name, `\/`) || strings.Contains(name, "..") {
 			return Address{}, Invalid("pipe 名字不能含路径分隔符或 ..: " + raw)

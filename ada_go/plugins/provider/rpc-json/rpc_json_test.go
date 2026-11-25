@@ -1,6 +1,7 @@
 package rpcjson
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -357,5 +358,50 @@ func TestKernelIntegration(t *testing.T) {
 	}
 	if out["pong"] != "1" {
 		t.Fatalf("结果不正确: %+v", out)
+	}
+}
+
+func TestMaxConnsReservation(t *testing.T) {
+	svc, addr := testService(t)
+	svc.conf.MaxConns = 1
+	srv, _ := startServer(t, svc, addr)
+	if _, err := srv.Handle("ping", func(context.Context, json.RawMessage) (any, error) { return "pong", nil }); err != nil {
+		t.Fatal(err)
+	}
+	_ = dial(t, svc, addr, "test", token)
+	if _, err := svc.Dial(context.Background(), addr, seamrpc.DialOptions{
+		Client: "test", Auth: seamrpc.Auth{Mode: seamrpc.AuthToken, Token: token},
+	}); err == nil {
+		t.Fatal("超过 MaxConns 的第二个连接应被拒绝")
+	}
+}
+
+func TestHeartbeatTimeout(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	go func() {
+		rd := bufio.NewReader(server)
+		_ = writeFrame(server, kindChallenge, challenge{V: 1, Nonce: "n", Modes: []string{"none"}}, 4096)
+		_, _, _ = readFrame(rd, 4096)
+		_ = writeFrame(server, kindReady, ready{V: 1, Peer: "srv", Features: []string{"ping"}}, 4096)
+		for {
+			if _, _, err := readFrame(rd, 4096); err != nil {
+				return
+			}
+		}
+	}()
+	cfg := config{HeartbeatMs: 10, MaxFrameBytes: 4096, MaxEventQueue: 16}
+	cfg.normalize()
+	p, err := newPeer(context.Background(), client, seamrpc.DialOptions{
+		Client: "test", Auth: seamrpc.Auth{Mode: seamrpc.AuthNone, AllowInsecure: true},
+	}, cfg)
+	if err != nil {
+		t.Fatalf("建立 peer 失败: %v", err)
+	}
+	defer p.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := p.Call(ctx, "ping", nil, nil); err == nil {
+		t.Fatal("心跳超时后 Call 应失败")
 	}
 }

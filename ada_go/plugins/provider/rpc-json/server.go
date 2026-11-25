@@ -27,9 +27,10 @@ type server struct {
 	mu      sync.RWMutex
 	methods map[string]seamrpc.Handler
 
-	pubMu sync.Mutex
-	conns map[*conn]struct{}
-	seq   map[string]uint64
+	pubMu   sync.Mutex
+	conns   map[*conn]struct{}
+	pending map[*conn]struct{}
+	seq     map[string]uint64
 
 	peerSeq  atomic.Uint64
 	frames   atomic.Uint64
@@ -48,6 +49,7 @@ func newServer(ctx context.Context, ln seamrpc.Listener, opts seamrpc.ServerOpti
 		modes:   []string{string(opts.Auth.Mode)},
 		methods: make(map[string]seamrpc.Handler),
 		conns:   make(map[*conn]struct{}),
+		pending: make(map[*conn]struct{}),
 		seq:     make(map[string]uint64),
 		done:    make(chan struct{}),
 	}
@@ -87,18 +89,20 @@ func (s *server) Publish(topic string, data any) error {
 	s.pubMu.Lock()
 	defer s.pubMu.Unlock()
 	s.mu.Lock()
-	s.seq[topic]++
-	seq := s.seq[topic]
 	targets := make([]*conn, 0, len(s.conns))
 	for c := range s.conns {
 		targets = append(targets, c)
 	}
 	s.mu.Unlock()
-	ev := event{V: protocolVersion, Topic: topic, Seq: seq, Data: b}
 	for _, c := range targets {
 		if !c.subscribed(topic) {
 			continue
 		}
+		c.mu.Lock()
+		c.seq[topic]++
+		seq := c.seq[topic]
+		c.mu.Unlock()
+		ev := event{V: protocolVersion, Topic: topic, Seq: seq, Data: b}
 		if err := c.send(kindEvent, ev); err != nil {
 			c.close()
 			continue
@@ -147,37 +151,72 @@ func (s *server) Close() error {
 		close(s.done)
 		_ = s.ln.Close()
 		s.mu.Lock()
+		pending := make([]*conn, 0, len(s.pending))
+		for c := range s.pending {
+			pending = append(pending, c)
+		}
+		conns := make([]*conn, 0, len(s.conns))
 		for c := range s.conns {
-			c.close()
+			conns = append(conns, c)
 		}
 		s.mu.Unlock()
+		for _, c := range pending {
+			c.close()
+		}
+		for _, c := range conns {
+			c.close()
+		}
 	})
 	s.wg.Wait()
 	return nil
 }
 
 func (s *server) handle(stream seamrpc.Stream) {
-	s.mu.RLock()
-	n := len(s.conns)
-	s.mu.RUnlock()
-	if n >= s.conf.MaxConns {
+	c := &conn{
+		srv: s, stream: stream, rd: bufio.NewReader(stream),
+		cancels: make(map[string]context.CancelFunc), seq: make(map[string]uint64),
+		writeCh: make(chan []byte, 128), writeStop: make(chan struct{}),
+	}
+	// 先预占名额再握手：否则并发连接都读到同一个 len(conns)，会突破 MaxConns。
+	s.mu.Lock()
+	select {
+	case <-s.done:
+		s.mu.Unlock()
+		_ = stream.Close()
+		return
+	default:
+	}
+	if len(s.conns)+len(s.pending) >= s.conf.MaxConns {
+		s.mu.Unlock()
 		_ = writeFrame(stream, kindBye, byeMsg{V: protocolVersion, Code: string(seamerr.ErrLimit), Message: "连接数超过上限"}, s.conf.MaxFrameBytes)
 		_ = stream.Close()
 		return
 	}
-	c := &conn{srv: s, stream: stream, rd: bufio.NewReader(stream), cancels: make(map[string]context.CancelFunc)}
+	s.pending[c] = struct{}{}
+	s.mu.Unlock()
+	reserved := true
+	defer func() {
+		if reserved {
+			s.mu.Lock()
+			delete(s.pending, c)
+			s.mu.Unlock()
+		}
+	}()
 	defer c.close()
 
 	peer, err := s.handshake(c, stream)
 	if err != nil {
-		_ = c.send(kindBye, byeMsg{V: protocolVersion, Code: string(seamerr.ErrAuth), Message: "鉴权失败"})
+		_ = writeFrame(c.stream, kindBye, byeMsg{V: protocolVersion, Code: string(seamerr.ErrAuth), Message: "鉴权失败"}, s.conf.MaxFrameBytes)
 		return
 	}
 	c.peer = peer
+	go c.writeLoop()
 	if err := c.send(kindReady, ready{V: protocolVersion, Peer: peer, Features: []string{"cancel", "events", "ping"}}); err != nil {
 		return
 	}
 	s.mu.Lock()
+	delete(s.pending, c)
+	reserved = false
 	s.conns[c] = struct{}{}
 	s.mu.Unlock()
 	defer func() {
@@ -189,13 +228,14 @@ func (s *server) handle(stream seamrpc.Stream) {
 }
 
 func (s *server) handshake(c *conn, stream seamrpc.Stream) (string, error) {
-	nonce, err := randomHex(16)
+	nonce, err := randomHex(32)
 	if err != nil {
 		return "", seamrpc.Internal("生成 nonce 失败")
 	}
-	if err := c.send(kindChallenge, challenge{V: protocolVersion, Nonce: nonce, Modes: s.modes}); err != nil {
+	if err := writeFrame(c.stream, kindChallenge, challenge{V: protocolVersion, Nonce: nonce, Modes: s.modes}, s.conf.MaxFrameBytes); err != nil {
 		return "", err
 	}
+	s.countOut()
 	// pipe 的同步句柄不支持 deadline,用定时关流兜底;成功握手前停掉。
 	timer := time.AfterFunc(5*time.Second, func() { _ = stream.Close() })
 	defer timer.Stop()
@@ -259,10 +299,13 @@ type conn struct {
 	rd     *bufio.Reader
 	peer   string
 
-	writeMu sync.Mutex
 	mu      sync.Mutex
 	topics  []string
 	cancels map[string]context.CancelFunc
+	seq     map[string]uint64
+
+	writeCh   chan []byte
+	writeStop chan struct{}
 
 	sem    chan struct{}
 	closed atomic.Bool
@@ -280,22 +323,52 @@ func (c *conn) subscribed(topic string) bool {
 }
 
 func (c *conn) send(kind byte, body any) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
 	if c.closed.Load() {
 		return seamrpc.Unavailable("连接已关闭")
 	}
-	err := writeFrame(c.stream, kind, body, c.srv.conf.MaxFrameBytes)
-	if err == nil {
-		c.srv.countOut()
+	data, err := encodeFrame(kind, body, c.srv.conf.MaxFrameBytes)
+	if err != nil {
+		return err
 	}
-	return err
+	select {
+	case <-c.writeStop:
+		return seamrpc.Unavailable("连接已关闭")
+	default:
+	}
+	select {
+	case c.writeCh <- data:
+		return nil
+	case <-c.writeStop:
+		return seamrpc.Unavailable("连接已关闭")
+	default:
+		return seamrpc.Limit("写队列已满")
+	}
+}
+
+// writeLoop 是每连接唯一写者：所有响应/事件走有界队列，慢客户端不会阻塞 Publish。
+func (c *conn) writeLoop() {
+	for {
+		select {
+		case data := <-c.writeCh:
+			_ = c.stream.SetDeadline(time.Now().Add(5 * time.Second))
+			err := writeFull(c.stream, data)
+			_ = c.stream.SetDeadline(time.Time{})
+			if err != nil {
+				c.close()
+				return
+			}
+			c.srv.countOut()
+		case <-c.writeStop:
+			return
+		}
+	}
 }
 
 func (c *conn) close() {
 	if !c.closed.CompareAndSwap(false, true) {
 		return
 	}
+	close(c.writeStop)
 	_ = c.stream.Close()
 	c.mu.Lock()
 	for _, cancel := range c.cancels {
@@ -323,11 +396,32 @@ func (c *conn) readLoop() {
 			}
 		case kindSubscribe:
 			var m subscribeMsg
-			if json.Unmarshal(body, &m) != nil || len(m.Topics) == 0 {
+			if json.Unmarshal(body, &m) != nil || len(m.Topics) == 0 || len(m.Topics) > 64 {
 				return
 			}
+			for _, topic := range m.Topics {
+				if topic == "" || len(topic) > 128 {
+					return
+				}
+			}
 			c.mu.Lock()
-			c.topics = append(c.topics, m.Topics...)
+			for _, topic := range m.Topics {
+				if len(c.topics) >= 128 {
+					c.mu.Unlock()
+					_ = c.send(kindBye, byeMsg{V: protocolVersion, Code: string(seamerr.ErrLimit), Message: "订阅 topic 过多"})
+					return
+				}
+				exists := false
+				for _, old := range c.topics {
+					if old == topic {
+						exists = true
+						break
+					}
+				}
+				if !exists {
+					c.topics = append(c.topics, topic)
+				}
+			}
 			c.mu.Unlock()
 		case kindPing:
 			_ = c.send(kindPong, pingMsg{V: protocolVersion, Ts: time.Now().UnixMilli()})

@@ -29,6 +29,7 @@ type Config struct {
 	TokenSecret   string   `json:"tokenSecret,omitempty"`
 	AllowRemote   bool     `json:"allowRemote,omitempty"`
 	AllowInsecure bool     `json:"allowInsecure,omitempty"`
+	Topics        []string `json:"topics,omitempty"`
 }
 
 type guard struct {
@@ -167,16 +168,58 @@ type guardedPeer struct {
 }
 
 func (p *guardedPeer) Call(ctx context.Context, method string, params, result any) error {
-	if !p.g.methodAllowed(method) {
+	if err := p.g.checkOutbound(ctx, method); err != nil {
+		return err
+	}
+	return p.Peer.Call(ctx, method, params, result)
+}
+
+// Notify 与 Call 共用同一套方法白名单与能力检查；通知不会因为“无响应”而绕过门禁。
+func (p *guardedPeer) Notify(ctx context.Context, method string, params any) error {
+	if err := p.g.checkOutbound(ctx, method); err != nil {
+		return err
+	}
+	return p.Peer.Notify(ctx, method, params)
+}
+
+// Subscribe 可按配置限制 topic；未配置 Topics 时保持原有的“订阅不额外门禁”行为。
+func (p *guardedPeer) Subscribe(ctx context.Context, topics ...string) error {
+	for _, topic := range topics {
+		if !p.g.topicAllowed(topic) {
+			return seamrpc.Denied("订阅 topic 不在 topics 白名单: " + topic)
+		}
+	}
+	return p.Peer.Subscribe(ctx, topics...)
+}
+
+func (g *guard) checkOutbound(ctx context.Context, method string) error {
+	if !g.methodAllowed(method) {
 		return seamrpc.Denied("方法不在 methods 白名单: " + method)
 	}
-	if err := p.g.authorize(ctx, "rpc.call."+method, method); err != nil {
+	if err := g.authorize(ctx, "rpc.call."+method, method); err != nil {
 		// 方法级能力失败时,若已授予泛化 rpc.call 则不拦截(保持向后兼容的粗粒度授权)。
-		if !p.g.hasGenericCall(ctx) {
+		if !g.hasGenericCall(ctx) {
 			return err
 		}
 	}
-	return p.Peer.Call(ctx, method, params, result)
+	return nil
+}
+
+func (g *guard) topicAllowed(topic string) bool {
+	if len(g.conf.Topics) == 0 {
+		return true
+	}
+	for _, pattern := range g.conf.Topics {
+		if pattern == "*" || pattern == topic {
+			return true
+		}
+		if len(pattern) > 2 && pattern[len(pattern)-2:] == "/*" && len(topic) >= len(pattern)-1 {
+			if topic[:len(pattern)-1] == pattern[:len(pattern)-1] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (g *guard) methodAllowed(method string) bool {

@@ -316,7 +316,7 @@ client                                  server
 - `proof = hex(HMAC-SHA256(token, "rpc1:" + nonce + ":" + client))`;服务器用 `crypto/subtle.ConstantTimeCompare` 比较。
 - `nonce` 每连接随机 32 字节,一次性;握手超时默认 5s;失败只允许一次,随后 `bye EAUTH` 并关闭。
 - `auth:"os"` 时 `modes:["os"]`,客户端 `proof` 为空;服务器依赖文件权限/管道 ACL,不校验 proof。`auth=os` 配在 `tcp` 上属于配置错误(`EINVALID`),启动即失败,避免「以为有 ACL 其实没有」。
-- `auth:"none"` 只在显式 `allowInsecure=true` 时可用(仅建议测试);启动时记 warning 并写审计。
+- `auth:"none"` 只在显式 `allowInsecure=true` 时可用(仅建议测试);provider 不写审计,生产配置应避免。
 - 服务器校验客户端名:长度 ≤ 64、可打印 ASCII、匹配 `^[a-z0-9._-]+$`;不在 `peerAllowlist` 内 → 拒绝。
 - token 不在日志/事件/错误文本里出现;错误只返回 `EAUTH` 与固定文案。
 
@@ -328,7 +328,7 @@ client                                  server
 {"v":1,"id":"c-1","error":{"code":"EDENIED","message":"缺少能力 rpc.call.agent.session.list","retryable":false}}
 ```
 
-- `id` 由客户端生成(建议 UUID/随机),连接内唯一;服务器对**活跃 id** 重复请求返回 `EINVALID`(避免串线)。
+- `id` 由客户端生成(建议 UUID/随机),非空且 ≤128 字节;服务器对**活跃 id** 重复请求返回 `EINVALID`(避免串线)。
 - `method` 长度 ≤ 128;只允许 `[a-z0-9._-]`;`params` 原始 JSON ≤ `maxParamsBytes`(默认 1 MiB)。
 - 结果/错误大小同样受帧上限约束;超大结果由方法自己改用句柄/URL(P8)。
 - 错误码复用 `seamerr`: `EINVALID` / `EAUTH` / `EDENIED` / `EUNAVAILABLE` / `ETIMEOUT` / `ECANCELED` / `ESCHEMA` / `EUNIMPLEMENTED`;**提案新增 `EINTERNAL`(服务器未预期错误)与 `ELIMIT`(超限)**,P0 实现时同步 `seamerr` 与 [seam-api.md](seam-api.md) §1.2。`EINTERNAL` 只返回固定文案,细节进日志(避免泄漏内部结构)。
@@ -341,7 +341,7 @@ client                                  server
 {"v":1,"topic":"agent/session/event","seq":7,"data":{"session":"s1","type":"assistant/message"}}
 ```
 
-- 订阅后服务器才推送;`topics` 支持 `*` 通配(仅末段或整体,不做正则)。
+- 订阅后服务器才推送;`topics` 支持 `*` 通配(仅末段或整体,不做正则);单次订阅最多 64 个 topic,每个 ≤128 字节。
 - `seq` 每 (peer, topic) 单调递增;客户端检测缺口 → 重新订阅/全量同步(协议不做重放缓冲)。
 - 事件队列每连接上限 `maxEventQueue`(默认 1024 帧/4 MiB);溢出 → `bye ELIMIT` + 关闭(宁可断开重连,也不静默丢事件)。
 - 事件**不是**审批/授权通道;审批仍走 `seam/approval`。
@@ -351,10 +351,10 @@ client                                  server
 | 机制 | 规则 |
 |---|---|
 | 取消 | 客户端 ctx 取消 → 发 `cancel`;服务器取消 handler ctx;handler 应返回 `ECANCELED`。连接断开也取消所有在飞请求 |
-| 心跳 | 空闲 30s 发 `ping`;连续 2 次未收到 `pong`(或任意帧)→ 关闭 |
-| 写背压 | 每连接单写者 + 有界队列(默认 4 MiB);队列满时写操作阻塞到 ctx 截止;仍失败 → `ELIMIT` + 关闭 |
+| 心跳 | 空闲 30s 发 `ping`;超过 2 个心跳周期没有收到任意入站帧 → `fail` 并关闭 |
+| 写背压 | 每连接单写者 + 128 帧有界队列;写超时 5s;队列满 → `ELIMIT` 并关闭(不再阻塞 Publish) |
 | 读并发 | 单读循环;请求分发到有界 worker(默认 32/连接);满则直接回 `ELIMIT`,不排队 |
-| 连接上限 | 默认 64;超过 → 立即关闭新连接(不静默排队) |
+| 连接上限 | 默认 64;握手前原子预占，含握手中的连接;超过 → 立即关闭新连接(不静默排队) |
 
 ### 4.7 版本与兼容
 
@@ -420,6 +420,7 @@ func Plugin() kernel.Plugin // 提供 "rpc"(空 Chain)与 "rpc-transport"(Regist
     { "id": "rpc-guard", "config": {
         "peers": ["desktop", "cli"],
         "methods": ["agent.session.list", "agent.session.append", "app.inspect"],
+        "topics":  ["agent/*"],
         "listen": ["unix:///run/ada/agent.sock", "pipe://ada-agent"],
         "call":    ["unix:///run/ada/orchestrator.sock"],
         "auth": "token",
@@ -436,7 +437,7 @@ func Plugin() kernel.Plugin // 提供 "rpc"(空 Chain)与 "rpc-transport"(Regist
 - **默认不监听**:`listen` 为空时 `rpc-json` 不创建任何 listener;没有「装了就开门」的默认。
 - `tokenSecret` 是 `seam/secrets` 的键名,不是明文;`auth=token` 且 secret 缺失 → 首次 `Dial`/`Listen` 失败(`EAUTH`)。`rpc-guard` 解析后把字节交给 `rpc-json`,provider 不直接读 secret。
 - `allowRemote=true` 才允许监听非 loopback;远程必须是 `tls://`(明文 TCP 拒绝),`allowInsecure=true` 只用于 `auth=none` 的测试场景。
-- `listen`/`call` 的地址在 `rpc-guard` 里做白名单;provider 本身不判断「该不该连」。
+- `listen`/`call` 的地址在 `rpc-guard` 里做白名单;`topics` 控制 `Subscribe` 可订阅的 topic(pattern 支持 `*` 与末段 `/*`);provider 本身不判断「该不该连」。
 - preset 只影响「装什么 + 配什么」,协议行为不因产品名分叉。
 
 ---
@@ -470,6 +471,8 @@ func Plugin() kernel.Plugin // 提供 "rpc"(空 Chain)与 "rpc-transport"(Regist
 | 取消:客户端取消 → handler ctx 取消 | `rpcjson.TestCancel` |
 | 并发:100 并发调用、id 不串线 | `rpcjson.TestConcurrent` |
 | 背压:worker 满返回 ELIMIT;写队列满关闭 | `rpcjson.TestBackpressure` |
+| 连接上限:并发/握手中连接预占 | `rpcjson.TestMaxConnsReservation` |
+| 守卫:Notify/Subscribe 不能绕过 | `rpcguard.TestDial` |
 | 事件:订阅/seq 递增/队列溢出断开 | `rpcjson.TestEvents` |
 | 传输:tcp loopback(端口 0)、unix 临时目录 | `rpcnet.TestDialListen*` |
 | unix 权限/stale/符号链接拒绝 | `rpcnet.TestPerm`、`TestStale` |
@@ -544,13 +547,13 @@ func Plugin() kernel.Plugin // 提供 "rpc"(空 Chain)与 "rpc-transport"(Regist
 
 ### 13.1 已实现子集(P0–P4 TLS)的偏差
 
-1. **授权已由 `rpc-guard` 提供**:出站地址/方法/`rpc.call.<method>`,入站 `rpc.listen.<network>`/peer 白名单/`tokenSecret`;未装 guard 时仍由宿主自行控制监听地址。
-2. **写路径是 mutex 串行写,不是独立写协程 + 有界队列**:慢客户端会让 `Publish`/响应阻塞;事件队列满仍按设计断开连接(`ELIMIT`)。这与 §4.6 的「单写者 + 队列」有差距,后续再引入队列。
-3. **心跳只做 ping/pong 宣告,不做存活回收**:客户端发 `ping`,服务端回 `pong`;不因缺 `pong` 主动断开,空闲连接由宿主 `Close`/ctx 取消。
+1. **授权已由 `rpc-guard` 提供**:出站地址/`Call`+`Notify` 方法/`rpc.call.<method>`/可选 `topics`,入站 `rpc.listen.<network>`/peer 白名单/`tokenSecret`;未装 guard 时仍由宿主自行控制监听地址。
+2. **写路径已改为每连接独立写协程 + 128 帧有界队列**;队列满/写超时按 `ELIMIT`/关闭处理。队列上限暂未做成按字节配置。
+3. **心跳已做存活回收**:客户端超过 2 个心跳周期没有收到任意入站帧就关闭;服务端仍主要依赖连接关闭/TCP 错误。
 4. **明文 TCP 仍不允许远程**:`rpc-net` 只做明文 tcp/unix;远程必须用 `rpc-tls` 的 `tls://`,`rpc-guard` 默认拒绝非 loopback 明文 TCP。
 5. **`noReply` 失败不可观测**:通知执行失败只丢在服务端,调用方无从知道;只适合幂等通知。
-6. **`allowInsecure` 与 `auth=none` 是测试通道**:生产配置不应使用;`auth=os` 在 unix 上只依赖 0600 权限,不校验对端 UID(`SO_PEERCRED` 在 P4)。
-7. **`rpc-json` 约 1088 行**,超过单插件 800 行预算,例外见 [ADR 0009](adr/0009-rpc-json-budget.md);拆包方向已写进 ADR。
+6. **`allowInsecure` 与 `auth=none` 是测试通道**:生产配置不应使用,且当前不写审计;`auth=os` 在 unix 上只依赖 0600 权限,不校验对端 UID(`SO_PEERCRED` 在 P4)。
+7. **`rpc-json` 约 1220 行**,超过单插件 800 行预算,例外见 [ADR 0009](adr/0009-rpc-json-budget.md)(2026-11-26 修订上限 1300);拆包方向不变。
 
 ### 13.2 不做(本提案明确)
 

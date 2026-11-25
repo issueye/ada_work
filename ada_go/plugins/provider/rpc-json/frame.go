@@ -36,27 +36,43 @@ func readFrame(r io.Reader, max int) (byte, []byte, error) {
 }
 
 // writeFrame 编一个帧。body 为 nil 时仍写 kind。
-func writeFrame(w io.Writer, kind byte, body any, max int) error {
+func encodeFrame(kind byte, body any, max int) ([]byte, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("rpc: 编码帧失败: %w", err)
+		return nil, fmt.Errorf("rpc: 编码帧失败: %w", err)
 	}
 	if max <= 0 {
 		max = defaultMaxFrame
 	}
 	if len(b)+1 > max {
-		return fmt.Errorf("%w: 帧 %d 超过上限 %d", errFrame, len(b)+1, max)
+		return nil, fmt.Errorf("%w: 帧 %d 超过上限 %d", errFrame, len(b)+1, max)
 	}
-	var hdr [frameHeaderSize]byte
-	binary.BigEndian.PutUint32(hdr[:4], uint32(len(b)+1))
-	hdr[4] = kind
-	if _, err := w.Write(hdr[:]); err != nil {
+	out := make([]byte, frameHeaderSize+len(b))
+	binary.BigEndian.PutUint32(out[:4], uint32(len(b)+1))
+	out[4] = kind
+	copy(out[frameHeaderSize:], b)
+	return out, nil
+}
+
+func writeFrame(w io.Writer, kind byte, body any, max int) error {
+	data, err := encodeFrame(kind, body, max)
+	if err != nil {
 		return err
 	}
-	if len(b) > 0 {
-		if _, err := w.Write(b); err != nil {
+	return writeFull(w, data)
+}
+
+// writeFull 处理 net.Conn / 管道上的短写；Write 返回 n<len 时必须继续。
+func writeFull(w io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := w.Write(data)
+		if err != nil {
 			return err
 		}
+		if n <= 0 {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
 	}
 	return nil
 }

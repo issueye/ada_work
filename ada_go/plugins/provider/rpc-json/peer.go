@@ -31,8 +31,10 @@ type peer struct {
 	errMu     sync.Mutex
 	err       error
 
-	seq    atomic.Uint64
-	heartD time.Duration
+	seq      atomic.Uint64
+	heartD   time.Duration
+	lastSeen atomic.Int64
+	features map[string]bool
 }
 
 // newPeer 建立连接:完成握手后启动读循环与心跳。
@@ -48,6 +50,7 @@ func newPeer(ctx context.Context, stream seamrpc.Stream, opts seamrpc.DialOption
 		return nil, err
 	}
 	p.remote = remote
+	p.lastSeen.Store(time.Now().UnixNano())
 	go p.readLoop()
 	go p.pingLoop()
 	return p, nil
@@ -117,6 +120,10 @@ func (p *peer) handshake(ctx context.Context, opts seamrpc.DialOptions) (string,
 	if err := json.Unmarshal(body, &r); err != nil || r.V != protocolVersion || r.Peer == "" {
 		return "", seamrpc.Invalid("ready 非法")
 	}
+	p.features = make(map[string]bool, len(r.Features))
+	for _, f := range r.Features {
+		p.features[f] = true
+	}
 	return r.Peer, nil
 }
 
@@ -149,7 +156,7 @@ func (p *peer) readLoop() {
 		switch kind {
 		case kindResponse:
 			var r response
-			if err := json.Unmarshal(body, &r); err != nil || r.ID == "" {
+			if err := json.Unmarshal(body, &r); err != nil || r.V != protocolVersion || r.ID == "" {
 				p.fail(seamrpc.Invalid("response 非法"))
 				return
 			}
@@ -162,7 +169,7 @@ func (p *peer) readLoop() {
 			}
 		case kindEvent:
 			var ev event
-			if err := json.Unmarshal(body, &ev); err != nil || ev.Topic == "" {
+			if err := json.Unmarshal(body, &ev); err != nil || ev.V != protocolVersion || ev.Topic == "" {
 				p.fail(seamrpc.Invalid("event 非法"))
 				return
 			}
@@ -194,6 +201,14 @@ func (p *peer) pingLoop() {
 	for {
 		select {
 		case <-t.C:
+			// 2 个心跳周期内没有任何入站帧，视为半开连接。
+			if last := p.lastSeen.Load(); last > 0 && time.Since(time.Unix(0, last)) > 2*p.heartD {
+				p.fail(seamrpc.Unavailable("心跳超时"))
+				return
+			}
+			if p.features != nil && !p.features["ping"] {
+				continue
+			}
 			if err := p.send(kindPing, pingMsg{V: protocolVersion, Ts: time.Now().UnixMilli()}); err != nil {
 				p.fail(seamrpc.Unavailable("心跳发送失败"))
 				return
@@ -280,11 +295,19 @@ func (p *peer) Notify(ctx context.Context, method string, params any) error {
 
 // Subscribe 订阅 topic;空列表非法。
 func (p *peer) Subscribe(ctx context.Context, topics ...string) error {
+	if p.features != nil && !p.features["events"] {
+		return seamrpc.Unimplemented("服务端未宣告 events 能力")
+	}
 	if err := ctx.Err(); err != nil {
 		return ctxError(err)
 	}
-	if len(topics) == 0 {
-		return seamrpc.Invalid("订阅至少需要一个 topic")
+	if len(topics) == 0 || len(topics) > 64 {
+		return seamrpc.Invalid("订阅 topic 数量必须在 1..64")
+	}
+	for _, topic := range topics {
+		if topic == "" || len(topic) > 128 {
+			return seamrpc.Invalid("订阅 topic 非法")
+		}
 	}
 	return p.send(kindSubscribe, subscribeMsg{V: protocolVersion, Topics: topics})
 }

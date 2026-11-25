@@ -12,17 +12,27 @@ import (
 	seamsecrets "github.com/issueye/ada_go_v2/plugins/seam/secrets"
 )
 
-type fakePeer struct{ called []string }
+type fakePeer struct {
+	called     []string
+	notified   []string
+	subscribed []string
+}
 
 func (p *fakePeer) Call(_ context.Context, method string, _ any, _ any) error {
 	p.called = append(p.called, method)
 	return nil
 }
-func (p *fakePeer) Notify(context.Context, string, any) error  { return nil }
-func (p *fakePeer) Subscribe(context.Context, ...string) error { return nil }
-func (p *fakePeer) Events() <-chan seamrpc.Event               { return nil }
-func (p *fakePeer) Remote() string                             { return "srv" }
-func (p *fakePeer) Close() error                               { return nil }
+func (p *fakePeer) Notify(_ context.Context, method string, _ any) error {
+	p.notified = append(p.notified, method)
+	return nil
+}
+func (p *fakePeer) Subscribe(_ context.Context, topics ...string) error {
+	p.subscribed = append(p.subscribed, topics...)
+	return nil
+}
+func (p *fakePeer) Events() <-chan seamrpc.Event { return nil }
+func (p *fakePeer) Remote() string               { return "srv" }
+func (p *fakePeer) Close() error                 { return nil }
 
 type fakeServer struct {
 	methods []string
@@ -91,7 +101,7 @@ func TestDial(t *testing.T) {
 	}
 	inner := &fakeService{peer: &fakePeer{}}
 	g := rpcguard.New(inner, broker, nil, rpcguard.Config{
-		Call: []string{"tcp://127.0.0.1:9000"}, Methods: []string{"read"},
+		Call: []string{"tcp://127.0.0.1:9000"}, Methods: []string{"read"}, Topics: []string{"agent/*"},
 	})
 	peer, err := g.Dial(principal("p1"), seamrpc.Address{Network: seamrpc.TCP, Name: "127.0.0.1:9000"}, seamrpc.DialOptions{})
 	if err != nil {
@@ -102,6 +112,18 @@ func TestDial(t *testing.T) {
 	}
 	if err := peer.Call(principal("p1"), "write", nil, nil); err == nil {
 		t.Fatalf("方法不在白名单应拒绝")
+	}
+	if err := peer.Notify(principal("p1"), "write", nil); err == nil {
+		t.Fatalf("Notify 方法不在白名单应拒绝")
+	}
+	if err := peer.Notify(principal("p1"), "read", nil); err != nil {
+		t.Fatalf("已授权 Notify 应放行: %v", err)
+	}
+	if err := peer.Subscribe(principal("p1"), "agent/session"); err != nil {
+		t.Fatalf("topic 白名单内应放行: %v", err)
+	}
+	if err := peer.Subscribe(principal("p1"), "secret/events"); err == nil {
+		t.Fatalf("topic 不在白名单应拒绝")
 	}
 	if _, err := g.Dial(principal("p1"), seamrpc.Address{Network: seamrpc.TCP, Name: "127.0.0.1:9001"}, seamrpc.DialOptions{}); err == nil {
 		t.Fatalf("地址不在白名单应拒绝")
