@@ -1,0 +1,10 @@
+{
+  "id": "greeter",
+  "name": "问候词",
+  "version": "0.1.0",
+  "kind": "go",
+  "provide": ["greeting"],
+  "config": {
+    "prefix": "你好"
+  }
+}

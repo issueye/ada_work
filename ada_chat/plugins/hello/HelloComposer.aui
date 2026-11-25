@@ -1,0 +1,18 @@
+<meta>
+{ "name": "HelloComposer" }
+</meta>
+<template>
+  <Button a-on:click="insert">插件按钮</Button>
+</template>
+<script lang="ts">
+export default {
+  name: 'HelloComposer',
+  setup(props, ctx) {
+    function insert() {
+      // 与侧栏同一个宿主能力;两个槽位共用一份白名单
+      ctx.api.call('host', 'chat.append', '输入框旁的动作(composer.action)')
+    }
+    return { insert }
+  },
+}
+</script>

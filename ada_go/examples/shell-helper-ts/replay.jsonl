@@ -1,0 +1,2 @@
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"执行命令"}]},"toolCalls":[{"id":"call-1","name":"run_shell","args":{"command":"echo shell-helper-ts","timeoutSeconds":10}}],"usage":{"inputTokens":12,"outputTokens":4},"finish":"tool_calls"}}
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"命令执行完成: shell-helper-ts"}]},"usage":{"inputTokens":40,"outputTokens":6},"finish":"stop"}}

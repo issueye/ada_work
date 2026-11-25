@@ -1,0 +1,8 @@
+{
+  "name": "agent-real",
+  "plugins": ["plugins", "../../plugins/tool/text-helper"],
+  "disable": ["llm-replay", "session-jsonl"],
+  "patch": {
+    "agent-loop": {"model": "mosi/nex-n2.6"}
+  }
+}

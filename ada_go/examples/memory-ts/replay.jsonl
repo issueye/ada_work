@@ -1,0 +1,3 @@
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"先记住这个偏好"}]},"toolCalls":[{"id":"call-1","name":"memory_write","args":{"text":"用户偏好中文回答,代码注释也使用中文。","tags":["preference"],"scope":"user","importance":4}}],"usage":{"inputTokens":20,"outputTokens":8},"finish":"tool_calls"}}
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"再检索一次"}]},"toolCalls":[{"id":"call-2","name":"memory_search","args":{"query":"中文回答","limit":3}}],"usage":{"inputTokens":60,"outputTokens":8},"finish":"tool_calls"}}
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"已记住并检索到你的语言偏好。"}]},"usage":{"inputTokens":90,"outputTokens":10},"finish":"stop"}}

@@ -1,0 +1,7 @@
+{
+  "id": "seam-prompts",
+  "name": "prompts seam",
+  "version": "0.1.0",
+  "kind": "go",
+  "provide": ["prompts"]
+}

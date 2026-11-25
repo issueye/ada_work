@@ -1,0 +1,32 @@
+<meta>
+{ "name": "HelloCard" }
+</meta>
+<template>
+  <Column gap="6" padding="8" radius="6" a-bind:background="theme.panel">
+    <Text bold a-bind:color="theme.fg">插件卡片 · composer.action</Text>
+    <Text font-size="12" a-bind:color="theme.muted">{{ state.msg }}</Text>
+    <Row gap="6">
+      <PrimaryButton a-on:click="greet">向宿主打招呼</PrimaryButton>
+      <Button a-on:click="sendCommand">发命令给宿主</Button>
+    </Row>
+  </Column>
+</template>
+<script lang="ts">
+import { reactive } from 'ada:surface'
+export default {
+  name: 'HelloCard',
+  setup(props, ctx) {
+    const state = reactive({ msg: '点按钮试能力白名单与事件前缀' })
+    // 能力白名单:只有声明了 host.greet 才能调用
+    function greet() {
+      state.msg = '宿主回复: ' + ctx.api.call('host', 'greet')
+    }
+    // 插件 → 宿主:事件名自动加 plugin.hello. 前缀
+    function sendCommand() {
+      ctx.emitHost('command', { name: 'hello.say', text: state.msg })
+      state.msg = '已发送命令给宿主(看终端)'
+    }
+    return { state, theme: ctx.theme(), greet, sendCommand }
+  },
+}
+</script>

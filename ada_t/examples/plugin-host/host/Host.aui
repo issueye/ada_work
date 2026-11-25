@@ -1,0 +1,6 @@
+<meta>
+{ "name": "Host" }
+</meta>
+<template>
+  <Column><Text>插件宿主</Text></Column>
+</template>

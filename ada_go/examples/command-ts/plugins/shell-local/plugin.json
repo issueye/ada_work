@@ -1,0 +1,8 @@
+{
+  "id": "shell-local",
+  "name": "shell local",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {"required": ["shell"]},
+  "config": {"workspace": "."}
+}

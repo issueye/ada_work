@@ -1,0 +1,45 @@
+<meta>
+{ "name": "HelloSide" }
+</meta>
+<template>
+  <Column gap="4" padding="6" radius="6" a-bind:background="theme.panel">
+    <Row gap="6" align="center">
+      <Text bold a-bind:color="theme.fg">示例插件</Text>
+      <Spacer />
+      <Text font-size="11" a-bind:color="theme.muted">{{ state.sessions }} 个会话</Text>
+    </Row>
+    <Text font-size="11" a-bind:color="theme.muted">{{ state.current }}</Text>
+    <Button a-on:click="insert">插入一条消息</Button>
+  </Column>
+</template>
+<script lang="ts">
+import { reactive } from 'ada:surface'
+export default {
+  name: 'HelloSide',
+  setup(props, ctx) {
+    const state = reactive({ sessions: 0, current: '未选择会话' })
+    // 只读宿主服务:能力必须写在 plugin.json 的 capabilities 里
+    function refresh() {
+      try {
+        state.sessions = ctx.api.call('host', 'sessions.list').length
+        const cur = ctx.api.call('host', 'sessions.current')
+        state.current = cur && cur.title ? '当前:' + cur.title : '未选择会话'
+      } catch (e) {
+        state.current = '宿主服务不可用: ' + (e && e.message ? e.message : e)
+      }
+    }
+    refresh()
+    // 宿主切会话时广播 plugin.hello.session
+    ctx.on('session', () => refresh())
+    function insert() {
+      try {
+        ctx.api.call('host', 'chat.append', '这条消息来自插件(host.chat.append)')
+        state.current = '已插入一条消息'
+      } catch (e) {
+        state.current = String(e && e.message ? e.message : e)
+      }
+    }
+    return { state, theme: ctx.theme(), insert }
+  },
+}
+</script>

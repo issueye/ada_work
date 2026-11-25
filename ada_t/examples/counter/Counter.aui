@@ -1,0 +1,123 @@
+<template>
+  <Column fill gap="10" padding="10">
+    <Tabs a-model="state.tab" options="计数,设置,数据" fill-x />
+
+    <Column gap="12" center a-if="state.tab === '计数'">
+      <Text class="hero" a-bind:font-size="state.size" bold>{{ display }}</Text>
+      <Row gap="8">
+        <PrimaryButton a-on:click="inc">Increment</PrimaryButton>
+        <Stepper a-model="state.n" min="-20" max="99" step="1" />
+        <Button a-on:click="dec">Decrement</Button>
+        <Button a-on:click="reset">Reset</Button>
+      </Row>
+      <Text color="gray">{{ $t('heartbeat') }}: {{ state.ticks }}</Text>
+    </Column>
+
+    <Column gap="10" a-if="state.tab === '设置'">
+      <Text bold>{{ $t('appearance') }}</Text>
+      <Segmented a-model="state.sizeMode" options="小,中,大" fill-x />
+      <Slider a-model="state.size" min="16" max="72" width="240" />
+      <Row gap="8" center>
+        <Text>{{ $t('name') }}:</Text>
+        <TextInput a-model="state.who" placeholder="Ada" width="140" />
+        <Button a-on:click="greet">Greet</Button>
+      </Row>
+      <Text a-if="state.greeted !== ''">{{ state.greeted }}</Text>
+      <Row gap="8" center>
+        <Button a-on:click="fetchTime">{{ $t('servertime') }}</Button>
+        <Text>{{ state.time }}</Text>
+      </Row>
+      <Row a-for="log, i in state.log" a-key="log" gap="4">
+        <Text color="gray">{{ i }}: {{ log }}</Text>
+      </Row>
+    </Column>
+
+    <Column gap="10" a-if="state.tab === '数据'">
+      <Text bold>{{ $t('events') }}</Text>
+      <Table a-model="state.selRow" a-bind:rows="state.log" columns="序号,事件" fields="i,text" grow fill-x follow-end />
+      <Text a-if="state.selRow >= 0" color="gray">{{ $t('picked') }}: {{ state.log[state.selRow] && state.log[state.selRow].text }}</Text>
+    </Column>
+
+    <Text a-if="state.err !== ''" color="red">{{ state.err }}</Text>
+  </Column>
+</template>
+
+<script lang="ts">
+import { reactive, computed, watch } from 'ada:surface'
+
+export default {
+  name: 'Counter',
+  setup(props, ctx) {
+    const state = reactive({ n: 0, who: '', greeted: '', err: '', time: '', ticks: 0, log: [], size: 40, sizeMode: '中', tab: '计数', selRow: -1 })
+    const display = computed(() => {
+      if (state.n === 0) return ctx.t('zero')
+      if (state.n % 15 === 0) return state.n + '!'
+      return String(state.n)
+    })
+    watch(() => state.n, (nv) => {
+      state.log.push({ i: state.log.length + 1, text: 'n -> ' + nv })
+      if (state.log.length > 8) state.log.shift()
+    })
+    // 档位选择联动滑杆(Segmented 与 Slider 双控件一状态)
+    watch(() => state.sizeMode, (mode) => {
+      state.size = mode === '小' ? 20 : mode === '中' ? 40 : 64
+    })
+    // Go → 组件事件(main.go 每 3 秒 Emit 一次)
+    ctx.on('tick', (p) => { state.ticks = p && p.n ? p.n : state.ticks + 1 })
+    // 演示驱动跳转页签与模拟点击(ADAT_COUNTER_DEMO=1 时 main.go 会 Emit)
+    ctx.on('goto', (p) => { if (p && p.tab) state.tab = p.tab })
+    ctx.on('demo-inc', () => { state.n++ })
+    function inc() { state.n++ }
+    function dec() { state.n-- }
+    function reset() { state.n = 0 }
+    // 组件 → Go 服务调用(main.go Expose 的 server.greet / server.now)
+    function greet() {
+      state.err = ''
+      try {
+        state.greeted = ctx.api.call('server', 'greet', state.who)
+      } catch (e) {
+        state.err = String(e && e.message ? e.message : e)
+      }
+    }
+    function fetchTime() {
+      state.time = ctx.api.call('server', 'now')
+    }
+    return { state, display, inc, dec, reset, greet, fetchTime }
+  },
+}
+</script>
+
+<style scoped>
+.hero {
+  font-size: 44;
+  bold: true;
+  color: #2f6fed;
+}
+</style>
+
+<i18n>
+{
+  "zh-CN": {
+    "name": "名字",
+    "hello": "你好",
+    "zero": "零",
+    "servertime": "服务器时间",
+    "heartbeat": "心跳",
+    "appearance": "外观设置",
+    "tab": "页签",
+    "events": "事件表(点行选中)",
+    "picked": "选中"
+  },
+  "en": {
+    "name": "Name",
+    "hello": "Hello",
+    "zero": "zero",
+    "servertime": "Server time",
+    "heartbeat": "Heartbeat",
+    "appearance": "Appearance",
+    "tab": "Tabs",
+    "events": "Event table (click a row to select)",
+    "picked": "Selected"
+  }
+}
+</i18n>

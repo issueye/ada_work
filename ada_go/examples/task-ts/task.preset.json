@@ -1,0 +1,10 @@
+{
+  "name": "task-ts",
+  "plugins": ["../agent/plugins", "plugins", "../../plugins/tool/text-helper"],
+  "disable": ["llm-openai", "session-jsonl"],
+  "patch": {
+    "agent-loop": {"model": "replay"},
+    "llm-replay": {"path": "examples/task-ts/replay.jsonl"},
+    "fs-local": {"workspace": "examples/task-ts/workspace"}
+  }
+}

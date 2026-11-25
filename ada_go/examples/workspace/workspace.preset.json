@@ -1,0 +1,10 @@
+{
+  "name": "workspace",
+  "plugins": ["../agent/plugins", "plugins", "../../plugins/tool/text-helper"],
+  "disable": ["llm-openai", "session-jsonl"],
+  "patch": {
+    "agent-loop": {"model": "replay"},
+    "llm-replay": {"path": "examples/workspace/replay.jsonl"},
+    "fs-local": {"tmp": "examples/workspace/.ada-tmp"}
+  }
+}

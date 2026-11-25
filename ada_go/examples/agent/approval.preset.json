@@ -1,0 +1,9 @@
+{
+  "name": "agent-approval",
+  "plugins": ["plugins", "../../plugins/tool/text-helper"],
+  "disable": ["llm-openai", "session-jsonl"],
+  "patch": {
+    "agent-loop": {"model": "replay"},
+    "approval-gate": {"tools": ["read_file"], "timeoutMs": 20000, "backend": "desktop-rpc"}
+  }
+}

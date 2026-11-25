@@ -1,0 +1,15 @@
+{
+  "name": "workspace-real",
+  "plugins": ["../agent/plugins", "plugins", "../../plugins/tool/text-helper"],
+  "disable": ["llm-replay", "session-jsonl"],
+  "patch": {
+    "agent-loop": {"model": "tokenharbor/deepseek-v4.1-flash:free", "maxParallelTools": 2},
+    "llm-openai": {
+      "endpoint": "http://127.0.0.1:3050/v1",
+      "model": "tokenharbor/deepseek-v4.1-flash:free",
+      "apiKeyEnv": "ADA_LLM_API_KEY",
+      "maxTokens": 512
+    },
+    "fs-local": {"workspace": "", "tmp": "examples/workspace/.ada-tmp"}
+  }
+}

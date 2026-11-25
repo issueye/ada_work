@@ -1,0 +1,3 @@
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"先添加任务"}]},"toolCalls":[{"id":"call-1","name":"task_add","args":{"title":"验证脚本插件","priority":4}}],"usage":{"inputTokens":12,"outputTokens":4},"finish":"tool_calls"}}
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"再列出任务"}]},"toolCalls":[{"id":"call-2","name":"task_list","args":{}}],"usage":{"inputTokens":40,"outputTokens":4},"finish":"tool_calls"}}
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"任务已添加并列出。"}]},"usage":{"inputTokens":60,"outputTokens":6},"finish":"stop"}}

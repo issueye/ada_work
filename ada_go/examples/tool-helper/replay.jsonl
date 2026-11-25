@@ -1,0 +1,3 @@
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"先找一下写文件的工具"}]},"toolCalls":[{"id":"call-1","name":"tool_find","args":{"query":"write","limit":5}}],"usage":{"inputTokens":20,"outputTokens":8},"finish":"tool_calls"}}
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"用 tool_exec 调用它"}]},"toolCalls":[{"id":"call-2","name":"tool_exec","args":{"name":"write_file","args":{"path":"out.txt","content":"via tool_exec"}}}],"usage":{"inputTokens":60,"outputTokens":12},"finish":"tool_calls"}}
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"已找到工具并通过 tool_exec 写入 out.txt。"}]},"usage":{"inputTokens":90,"outputTokens":10},"finish":"stop"}}

@@ -1,0 +1,145 @@
+<template>
+  <Row fill gap="0">
+    <Sidebar a-prop:chats="state.chats" a-prop:selected="state.selected" a-on:select="onSelect" />
+    <Column grow fill-y gap="8" background="#10151d">
+      <Text class="title" bold>{{ currentName }}</Text>
+      <Scroll grow fill-x background="#10151d">
+        <Column gap="6" padding="10" fill-x>
+          <Bubble a-for="m in state.messages" a-key="m.id" a-prop:msg="m" />
+          <Text a-if="state.messages.length === 0" color="gray">{{ $t('empty') }}</Text>
+        </Column>
+      </Scroll>
+      <Row gap="8" padding="8">
+        <TextInput a-model="state.draft" a-on:submit="send" placeholder="输入消息,回车发送" grow />
+        <PrimaryButton a-on:click="send">{{ state.sending ? $t('sending') : $t('send') }}</PrimaryButton>
+      </Row>
+      <Row a-if="state.err !== ''" padding="8"><Text color="red">{{ state.err }}</Text></Row>
+      <Row gap="8" padding="8" justify="end">
+        <Button a-on:click="askClear">{{ $t('clear') }}</Button>
+      </Row>
+      <AlertDialog a-model="state.confirming" a-bind:title="$t('confirm-title')" a-bind:message="$t('confirm-msg')" buttons="取消,清空" a-on:action="onConfirm" a-on:dismiss="onDismiss" />
+    </Column>
+  </Row>
+</template>
+
+<script lang="ts">
+import Sidebar from './Sidebar'
+import Bubble from './Bubble'
+import { reactive, computed } from 'ada:surface'
+
+export default {
+  name: 'Chat',
+  components: { Sidebar, Bubble },
+  setup(props, ctx) {
+    const state = reactive({
+      chats: [],
+      messages: [],
+      selected: '',
+      draft: '',
+      err: '',
+      sending: false,
+      confirming: false,
+    })
+
+    // 初始化:从 Go 服务拉会话列表与首个会话的消息。
+    // 服务未就绪(headless 渲染/降级模式)时保持空壳,不崩。
+    function load() {
+      try {
+        state.chats = ctx.api.call('chat', 'contacts')
+        if (state.chats.length > 0) select(state.chats[0].id)
+      } catch (e) {
+        ctx.log('chat 服务未就绪:', String(e && e.message ? e.message : e))
+      }
+    }
+    function select(id) {
+      state.selected = id
+      state.messages = ctx.api.call('chat', 'history', id)
+    }
+    function onSelect(e) { select(e.id) }
+
+    // 发送:异步走 Go 服务(模拟网络延迟),等待期间界面不阻塞;
+    // 机器人回声稍后经 ctx.on('message') 推回。
+    async function send(e) {
+      const text = (e && e.value !== undefined ? e.value : state.draft).trim()
+      if (text === '' || state.sending) return
+      state.sending = true
+      state.err = ''
+      try {
+        const m = await ctx.api.callAsync('chat', 'send', state.selected, text)
+        state.messages.push(m)
+        bump(state.selected, '我: ' + m.text)
+        state.draft = ''
+      } catch (err) {
+        state.err = String(err && err.message ? err.message : err)
+      } finally {
+        state.sending = false
+      }
+    }
+
+    // Go → 组件:机器人消息到达
+    ctx.on('message', (m) => {
+      if (m.contact === state.selected) state.messages.push(m)
+      bump(m.contact, m.text)
+    })
+    // 演示驱动:打开确认对话框 / 弹 toast
+    ctx.on('ask-clear', () => { state.confirming = true })
+    ctx.on('toast-demo', () => { ctx.toast(ctx.t('toast-demo')) })
+
+    // 清空当前会话:对话框确认后走 Go 服务,完成后弹 toast
+    function askClear() { state.confirming = true }
+    async function onConfirm(e) {
+      if (e.index !== 1) return // 取消
+      try {
+        await ctx.api.callAsync('chat', 'clear', state.selected)
+        state.messages = []
+        for (const c of state.chats) {
+          if (c.id === state.selected) c.last = ''
+        }
+        ctx.toast(ctx.t('cleared'))
+      } catch (err) {
+        state.err = String(err && err.message ? err.message : err)
+      }
+    }
+    function onDismiss() { /* Escape 关闭:a-model 已把 open 写回 false */ }
+
+    function bump(contactID, preview) {
+      for (const c of state.chats) {
+        if (c.id === contactID) {
+          c.last = preview
+          if (contactID !== state.selected) c.unread = (c.unread || 0) + 1
+        }
+      }
+    }
+
+    const currentName = computed(() => {
+      for (const c of state.chats) {
+        if (c.id === state.selected) return c.name
+      }
+      return ctx.t('unnamed')
+    })
+
+    load()
+    return { state, currentName, onSelect, send, askClear, onConfirm, onDismiss }
+  },
+}
+</script>
+
+<style scoped>
+.title {
+  font-size: 16;
+  color: #e8eef7;
+}
+</style>
+
+<i18n>
+{
+  "zh-CN": { "send": "发送",
+    "sending": "发送中…", "empty": "还没有消息,打个招呼吧", "unnamed": "未选择",
+    "clear": "清空会话", "confirm-title": "清空会话?", "confirm-msg": "将删除当前会话的全部消息,不可恢复。",
+    "cleared": "会话已清空", "toast-demo": "这是一条来自 Go 的提示" },
+  "en": { "send": "Send",
+    "sending": "Sending…", "empty": "No messages yet", "unnamed": "No chat selected",
+    "clear": "Clear chat", "confirm-title": "Clear this chat?", "confirm-msg": "All messages in this chat will be deleted. This cannot be undone.",
+    "cleared": "Chat cleared", "toast-demo": "A message from Go" }
+}
+</i18n>

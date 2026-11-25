@@ -1,0 +1,12 @@
+{
+  "id": "hello",
+  "name": "Hello 插件",
+  "version": "0.1.0",
+  "description": "演示槽位贡献、能力白名单、事件前缀与主题令牌的最小插件",
+  "entry": "HelloCard",
+  "capabilities": ["host.greet"],
+  "slots": [
+    { "slot": "sidebar.item", "component": "HelloSide", "order": 10 },
+    { "slot": "composer.action", "component": "HelloCard", "order": 10 }
+  ]
+}

@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # 三平台跑同一份门禁:内核必须纯 Go、CGO=0、可交叉编译(AGENTS §5.2 / 硬约束 C8)。
+  guard:
+    name: guard (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: 安装 staticcheck(guard 会校验它)
+        shell: pwsh
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+      - name: 红词汇/依赖/gofmt/build/vet/staticcheck/race/交叉编译/预算
+        shell: pwsh
+        run: ./scripts/guard.ps1
+
+  # staticcheck 单独一个 job:它依赖工具链版本,失败时不该掩盖 guard 的结论。
+  staticcheck:
+    name: staticcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: 安装 staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - run: staticcheck ./...
+
+  # 性能预算(AGENTS §6.3):跨机器只校验绝对预算,±15% 回归比对需要同机基线。
+  bench:
+    name: bench budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: 基准预算
+        shell: pwsh
+        run: ./scripts/bench.ps1

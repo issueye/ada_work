@@ -1,0 +1,10 @@
+{
+  "id": "upper",
+  "name": "大写转换",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": ["greeting"]
+  },
+  "provide": ["upper"]
+}

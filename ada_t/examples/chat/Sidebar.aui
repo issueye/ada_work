@@ -1,0 +1,52 @@
+<template>
+  <Column class="side" width="220" fill-y padding="8" gap="2">
+    <Text class="side-title" bold>{{ $t('chats') }}</Text>
+    <Row a-for="c in props.chats" a-key="c.id" a-class:active="c.id === props.selected"
+         gap="8" padding="6" fill-x a-on:click="pick(c)">
+      <Column grow>
+        <Text bold>{{ c.name }}</Text>
+        <Text class="preview" color="#b9c6d8">{{ c.last }}</Text>
+      </Column>
+      <Text a-if="c.unread > 0" class="badge">{{ c.unread }}</Text>
+    </Row>
+  </Column>
+</template>
+
+<script lang="ts">
+export default {
+  name: 'Sidebar',
+  setup(props, ctx) {
+    function pick(c) {
+      ctx.emit('select', { id: c.id })
+    }
+    return { pick }
+  },
+}
+</script>
+
+<style scoped>
+.side {
+  background: #1d2430;
+}
+.side-title {
+  font-size: 13;
+  color: #9fb0c3;
+  padding: 6;
+}
+.active {
+  background: #2f6fed;
+}
+.badge {
+  color: #ffffff;
+}
+.preview {
+  font-size: 12;
+}
+</style>
+
+<i18n>
+{
+  "zh-CN": { "chats": "会话" },
+  "en": { "chats": "Chats" }
+}
+</i18n>

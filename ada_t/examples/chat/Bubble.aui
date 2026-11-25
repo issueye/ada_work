@@ -1,0 +1,25 @@
+<template>
+  <Row fill-x a-bind:justify="props.msg.from === 'me' ? 'end' : 'start'">
+    <Column class="bubble" a-class:me="props.msg.from === 'me'" a-class:them="props.msg.from !== 'me'"
+            gap="2" padding="8" radius="10">
+      <Text>{{ props.msg.text }}</Text>
+      <Text class="meta">{{ props.msg.from === 'me' ? '我' : props.msg.from }} · {{ props.msg.time }}</Text>
+    </Column>
+  </Row>
+</template>
+
+<style scoped>
+.bubble {
+  background: #243044;
+}
+.me {
+  background: #2f6fed;
+}
+.them {
+  background: #243044;
+}
+.meta {
+  font-size: 11;
+  color: #b9c6d8;
+}
+</style>

@@ -1,0 +1,8 @@
+{
+  "name": "skill-helper",
+  "plugins": ["../agent/plugins", "../../plugins/tool/skill-helper"],
+  "disable": ["llm-openai", "session-jsonl"],
+  "patch": {
+    "agent-loop": {"model": "replay"}
+  }
+}

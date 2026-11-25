@@ -1,0 +1,39 @@
+# 构建产物与本地工具输出
+*.test
+*.exe
+*.out
+c
+cover
+/bench.txt
+
+# 编辑器与系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Go 工作区文件（若将来需要多模块开发）
+go.work
+go.work.sum
+
+# 本机基准基线(机器相关,按需生成)
+/bench-baseline.txt
+
+# 本地会话日志
+examples/agent/sessions/
+
+# 本地编译产物目录
+/bin/
+
+# 工作区示例临时目录
+examples/workspace/.ada-tmp/
+
+# 示例工作区里由工具写入的本地状态(记忆/任务/临时目录)
+examples/*/workspace/.ada/
+examples/*/workspace/.ada-tmp/
+
+# 发布打包产物
+/dist/
+
+# 本机环境变量(可能含 secret;示例见 .env.example)
+.env

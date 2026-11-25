@@ -1,0 +1,7 @@
+{
+  "id": "seam-shell",
+  "name": "shell seam",
+  "version": "0.1.0",
+  "kind": "go",
+  "provide": ["shell"]
+}

@@ -1,0 +1,18 @@
+<meta>
+{ "name": "HelloSide" }
+</meta>
+<template>
+  <Column gap="2" padding="4" radius="6" a-bind:background="theme.panel">
+    <Text bold a-bind:color="theme.fg">👋 hello 插件</Text>
+    <Text font-size="12" a-bind:color="theme.muted">侧栏槽位 · sidebar.item</Text>
+  </Column>
+</template>
+<script lang="ts">
+export default {
+  name: 'HelloSide',
+  setup(props, ctx) {
+    // 主题令牌由宿主下发(ctx.theme),插件不写死颜色
+    return { theme: ctx.theme() }
+  },
+}
+</script>

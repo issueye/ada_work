@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Linux:验证纯 Go 可构建与核心测试(CGO 关闭,不需要桌面/OpenGL 依赖)。
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Build all packages
+        run: go build ./...
+      - name: Test core packages
+        # mygoui 的集成测试依赖 mygo 的 headless 渲染,当前只在 Windows 门禁跑。
+        run: go test . ./internal/... ./widget ./backend/headless ./cmd/adat
+
+  # Windows:完整测试矩阵(与 mygo 支持的桌面 GPU 后端一致)。
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      - name: Build
+        run: go build ./...
+      - name: Test
+        run: go test ./...
+      - name: Race (core)
+        run: go test -race . ./internal/... ./plugin ./widget ./backend/headless ./backend/mygoui ./backend/embed ./cmd/adat
+      - name: Benchmark smoke
+        run: go test ./internal/rt -run "^$" -bench BenchmarkRenderList100 -benchtime=1x

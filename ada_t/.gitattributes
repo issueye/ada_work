@@ -1,0 +1,12 @@
+# 统一用 LF 存储与检出:Windows 的 core.autocrlf=true 会把工作区转成 CRLF,
+# 导致 gofmt -l 把所有文件误判为未格式化(CI 在 Linux 上又看不到这个问题)。
+* text=auto eol=lf
+
+# 二进制资源不做行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.exe binary
+*.dll binary

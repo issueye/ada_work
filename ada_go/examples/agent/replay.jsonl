@@ -1,0 +1,2 @@
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"我先读文件"}]},"toolCalls":[{"id":"call-1","name":"read_file","args":{"path":"a.txt"}}],"usage":{"inputTokens":12,"outputTokens":4},"finish":"tool_calls"}}
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"文件内容是 hello"}]},"usage":{"inputTokens":20,"outputTokens":6},"finish":"stop"}}

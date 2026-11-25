@@ -1,0 +1,35 @@
+<meta>
+{ "name": "Inspector" }
+</meta>
+<template>
+  <Column fill gap="6" padding="8">
+    <Text bold>Inspector</Text>
+    <Text color="gray">实例 {{ state.stats.instances }} · handler {{ state.stats.handlers }} · 订阅 {{ state.stats.eventSubs }} · 窗口 {{ state.stats.windows }}</Text>
+    <Column gap="8" a-for="w in state.windows" a-key="w.id" grow>
+      <Text bold color="gray">{{ w.id }}</Text>
+      <Scroll height="240" fill-x background="#10151d">
+        <Column gap="2" padding="6" fill-x>
+          <Row a-for="r, i in w.rows" a-key="i">
+            <Text font-size="12" color="#9fb0c3" a-bind:padding="r.depth * 8">{{ r.label }}</Text>
+          </Row>
+        </Column>
+      </Scroll>
+    </Column>
+  </Column>
+</template>
+
+<script lang="ts">
+import { reactive } from 'ada:surface'
+export default {
+  name: 'Inspector',
+  setup(props, ctx) {
+    const state = reactive({ stats: {}, windows: [] })
+    // Go 侧每 1.5 秒推送:stats + 各窗口扁平化组件树
+    ctx.on('__inspector', (p) => {
+      state.stats = p.stats
+      state.windows = p.windows
+    })
+    return { state }
+  },
+}
+</script>

@@ -1,0 +1,31 @@
+# 打包与构建产物（各子项目自己的 .gitignore 还会覆盖各自目录）
+/dist/
+**/bin/
+**/dist/
+
+# 本地工具缓存与临时目录
+**/.mygo/
+**/.ada/
+**/.ada-tmp/
+
+# 可执行文件与编译中间产物
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.log
+
+# Go 工作区文件（本地用 replace 指向同级模块）
+go.work
+go.work.sum
+
+# 本机环境变量（示例 .env.example 保留）
+.env
+
+# 编辑器与系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

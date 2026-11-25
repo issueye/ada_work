@@ -1,0 +1,17 @@
+# 构建产物
+/dist/
+*.exe
+*.test
+*.out
+*.dll
+*.so
+*.dylib
+
+# 编辑器 / 操作系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 本地日志
+*.log

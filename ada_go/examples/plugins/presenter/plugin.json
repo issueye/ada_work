@@ -1,0 +1,10 @@
+{
+  "id": "presenter",
+  "name": "渲染器",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": ["upper"],
+    "optional": ["telemetry"]
+  }
+}

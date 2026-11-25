@@ -1,0 +1,13 @@
+{
+  "name": "shell-helper-ts",
+  "plugins": ["../agent/plugins", "plugins", "../../plugins/tool/text-helper", "../../plugins/tool/shell-helper"],
+  "disable": ["llm-openai", "session-jsonl"],
+  "patch": {
+    "agent-loop": {"model": "replay"},
+    "llm-replay": {"path": "examples/shell-helper-ts/replay.jsonl"},
+    "fs-local": {"workspace": "examples/shell-helper-ts/workspace"},
+    "shell-local": {"workspace": "examples/shell-helper-ts/workspace"},
+    "sandbox-none": {"mode": "workspace-write"},
+    "shell-guard": {"backend": "sandbox-none"}
+  }
+}

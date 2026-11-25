@@ -1,0 +1,8 @@
+{
+  "id": "approval-gate",
+  "name": "approval gate",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {"required": ["tools"], "optional": ["approval"]},
+  "config": {"tools": [], "timeoutMs": 20000}
+}

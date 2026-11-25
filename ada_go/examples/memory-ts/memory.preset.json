@@ -1,0 +1,14 @@
+{
+  "name": "memory-ts",
+  "plugins": ["../agent/plugins", "../../plugins/tool/memory-helper"],
+  "disable": ["llm-openai", "session-jsonl"],
+  "patch": {
+    "agent-loop": {"model": "replay"},
+    "llm-replay": {"path": "examples/memory-ts/replay.jsonl"},
+    "fs-local": {"workspace": "examples/memory-ts/workspace"},
+    "memory-helper": {"autoRecall": true},
+    "system-prompt": {
+      "tools": "长期记忆:\n- 用户要求记住事实/偏好时调用 memory_write;\n- 回答涉及既往信息时先 memory_search 再引用;\n- 用户要求忘记时调用 memory_forget。\n"
+    }
+  }
+}

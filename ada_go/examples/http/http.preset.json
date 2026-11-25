@@ -1,0 +1,8 @@
+{
+  "name": "http",
+  "plugins": ["../agent/plugins", "../../plugins/tool/http-helper"],
+  "disable": ["llm-openai", "session-jsonl"],
+  "patch": {
+    "agent-loop": {"model": "replay"}
+  }
+}

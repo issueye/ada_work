@@ -1,0 +1,13 @@
+{
+  "id": "llm-openai",
+  "name": "LLM OpenAI compatible",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {"required": ["llm"]},
+  "config": {
+    "endpoint": "http://127.0.0.1:3050/v1",
+    "model": "mosi/nex-n2.6",
+    "apiKeyEnv": "ADA_LLM_API_KEY",
+    "maxTokens": 128
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "id": "shell-helper",
+  "name": "shell tool (script)",
+  "version": "0.1.0",
+  "kind": "ts",
+  "entry": "plugin.ts",
+  "inject": {
+    "required": ["tools", "shell"]
+  }
+}

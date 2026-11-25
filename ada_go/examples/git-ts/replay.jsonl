@@ -1,0 +1,2 @@
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"我先看看仓库状态"}]},"toolCalls":[{"id":"call-1","name":"git_status","args":{}}],"usage":{"inputTokens":12,"outputTokens":4},"finish":"tool_calls"}}
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"已读取 git 状态(脚本插件)。"}]},"usage":{"inputTokens":40,"outputTokens":8},"finish":"stop"}}

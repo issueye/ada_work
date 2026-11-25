@@ -1,0 +1,11 @@
+{
+  "id": "system-prompt",
+  "name": "system prompt",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {"required": ["prompts"]},
+  "config": {
+    "identity": "你是 ada 的最小测试 agent。",
+    "rules": ["先读需要的文件,再总结。", "工具失败时如实说明。"]
+  }
+}

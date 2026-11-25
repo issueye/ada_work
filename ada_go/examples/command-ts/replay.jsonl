@@ -1,0 +1,2 @@
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"先执行 git --version"}]},"toolCalls":[{"id":"call-1","name":"cmd_run","args":{"program":"git","args":["--version"]}}],"usage":{"inputTokens":12,"outputTokens":4},"finish":"tool_calls"}}
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"命令执行完成。"}]},"usage":{"inputTokens":40,"outputTokens":6},"finish":"stop"}}

@@ -1,0 +1,9 @@
+{
+  "name": "git-ts",
+  "plugins": ["../agent/plugins", "plugins", "../../plugins/tool/text-helper"],
+  "disable": ["llm-openai", "session-jsonl"],
+  "patch": {
+    "agent-loop": {"model": "replay"},
+    "llm-replay": {"path": "examples/git-ts/replay.jsonl"}
+  }
+}
