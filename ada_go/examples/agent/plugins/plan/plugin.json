@@ -1,0 +1,7 @@
+{
+  "id": "plan",
+  "name": "session plan",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {"required": ["tools"]}
+}

@@ -414,7 +414,15 @@ func run() error {
 		personas.set(sess.ID(), sessionPersona{
 			name: firstNonEmpty(in.BotName, name), instruction: in.Instruction,
 		})
+		// 计划是 session 事件,不是总线事件;在 Run 期间订阅并实时转发。
+		from := uint64(1)
+		if events, eerr := sess.Events(0, 0); eerr == nil && len(events) > 0 {
+			from = events[len(events)-1].Seq + 1
+		}
+		stopPlan := forwardPlanUpdates(sess, from, in.Turn, publish)
 		res, err := ag.Run(chatCtx, sess, in.Text)
+		stopPlan()
+		publishLatestPlan(sess, in.Turn, publish)
 		if err != nil {
 			if chatCtx.Err() != nil {
 				return nil, chatCtx.Err()

@@ -72,18 +72,21 @@ fs/workspace、preset、模型与 LLM provider；`chat.send` 串行执行。`ctx
 
 ### 事件
 
-`chat.send` 运行期推送四类事件，宿主按 `turn`（工具卡片再按 `id`）合并：
+`chat.send` 运行期推送以下事件，宿主按 `turn`（工具卡片再按 `id`）合并：
 
 | 事件 | 载荷 | 说明 |
 |---|---|---|
 | `chat/delta` | `{turn, text}` | 正文增量；非流式 provider 没有增量时，退回整段回放 |
 | `chat/reasoning` | `{turn, text}` | 思考过程增量，宿主可做成可折叠区域 |
 | `chat/tool` | `{turn, id, name, args, status}`，结果事件另有 `text`、`durationMs` | 工具开始为 `status="running"`，结果按 `ok`/`denied`/`error`/`timeout` 区分；`text` 截断到 8 KiB |
+| `chat/plan` | `{turn, title, steps:[{content,status,priority}]}` | 会话计划更新；来自 session 的 `plugin:plan/updated`，Run 期间实时转发，结束后补发最新一份 |
 | `chat/approval` | `{turn, id, source, op, target, reason, timeoutMs}` | 升级审批请求；宿主用 `chat.approve` 回答，超时/取消按拒绝 |
 | `chat/error` | `{turn, reason}` | 本轮失败的可读原因（RPC 响应仍是 `EINTERNAL`，细节只走事件） |
 | `chat/done` | `{turn}` | 本轮结束 |
 
 工具事件来自 `tools/pre-execute` 与 `tools/result`，只做转发，不参与策略判定（事件不是门禁）。
+计划事件来自会话日志（`plugin:plan/updated`），不是总线事件；`chat.send` 在 Run 前订阅、
+Run 后 drain 并补发最新计划，保证任务面板最终状态不丢。
 
 ### 审批（按 preset 启用）
 
