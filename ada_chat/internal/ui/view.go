@@ -88,6 +88,8 @@ type UI struct {
 	activeID int
 	// pending 是列表行发起的改动，等列表建完再执行。
 	pending func()
+	// todoOpen 按会话保存任务面板的展开状态;默认展开。
+	todoOpen map[int]*bool
 
 	// Plugins 是插件宿主（可空：没有插件时界面与原来完全一致）。
 	Plugins *plugins.Host

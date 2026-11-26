@@ -144,6 +144,7 @@ ada_chat/
 ├── internal/
 │   ├── app/                    # 状态与行为（只依赖标准库）
 │   │   ├── app.go              # 机器人、会话、消息、偏好、RPC 回写
+│   │   ├── todo.go             # 会话任务列表(agent 计划)与持久化
 │   │   ├── tools.go            # 工具调用类型与 chat/tool 状态
 │   │   └── state.go            # 机器人/对话的 state.json 读写与重启后归一化
 │   ├── rpc/                    # seam RPC v1：帧/握手/调用/事件/取消/心跳 + 传输
@@ -156,6 +157,7 @@ ada_chat/
 │       ├── sidebar.go          # 添加机器人、机器人行、对话分组
 │       ├── bots.go             # 机器人图标/状态、工作目录选择、添加弹窗
 │       ├── chat.go             # 对话卡片、欢迎页、消息行、工具卡片
+│       ├── todo.go             # 对话头部下方的任务/计划面板
 │       ├── composer.go         # 输入框、Enter 处理、发送按钮
 │       ├── dialogs.go          # 设置、重命名、删除
 │       └── tools.go            # 可折叠的工具调用卡片
@@ -196,7 +198,7 @@ RPC 方法：
 | 方法 | 参数 | 结果/事件 |
 |---|---|---|
 | `bot.info` | — | `{name, model, workspace, pid}` |
-| `chat.send` | `{turn, text, botId, botName, instruction, sessionId}` | `{turn, text}`；期间 `chat/reasoning`、`chat/delta`、`chat/tool`、`chat/approval`、`chat/error`，最后 `chat/done` |
+| `chat.send` | `{turn, text, botId, botName, instruction, sessionId}` | `{turn, text}`；期间 `chat/reasoning`、`chat/delta`、`chat/tool`、`chat/plan`、`chat/approval`、`chat/error`，最后 `chat/done` |
 | `chat.approve` | `{id, allow, reason}` | `{id, allow}`；回答一次 `chat/approval`，未知 id 返回错误 |
 
 ### ACP 模式
@@ -209,10 +211,10 @@ RPC 方法：
 | `session/new` | 每个 ada_chat 对话懒创建一个 agent session，`cwd` 是机器人工作目录 |
 | `session/prompt` | 发送一轮文本 |
 | `session/cancel` | 用户点「停止生成」时发通知 |
-| `session/update` | `agent_message_chunk` / `agent_thought_chunk` / `tool_call` / `tool_call_update` 映射到消息、思考块与工具卡片 |
+| `session/update` | `agent_message_chunk` / `agent_thought_chunk` / `tool_call` / `tool_call_update` / `plan` 映射到消息、思考块、工具卡片与任务面板 |
 | `session/request_permission` | agent → 宿主反向请求，接到现有「需要审批」面板；允许/拒绝回 `selected`，超时回 `cancelled` |
 
-限制：`plan`、`user_message_chunk` 与 ACP 的 fs/terminal 反向能力暂未映射；接其它 ACP agent 时，
+限制：`user_message_chunk` 与 ACP 的 fs/terminal 反向能力暂未映射；接其它 ACP agent 时，
 只有 `session/new|prompt|cancel`、`session/update` 与 `session/request_permission` 是必需的。
 ACP session 不落盘：重启 ada_chat 后旧对话会重新 `session/new`，不会恢复 agent 侧上下文。
 ACP 期间的机器人身份/系统提示来自 preset，不能像 RPC 那样按机器人逐轮替换。
@@ -241,6 +243,9 @@ ada_chat；ACP 模式下则由 `session/update` 提供同等粒度的增量：
 - 思考块是**自动收起**的：思考流式时展开，随后出现正文/工具、或这一轮结束，就折回标题行；
   用户想回看再点标题展开（展开状态保留到下一次同段思考结束）；
 - 工具卡片的展开内容**限高 320 DIP 并内部滚动**：参数与结果再长也不会把整条对话撑开；
+- **任务面板**：agent 的计划走 RPC 的 `chat/plan` 或 ACP 的 `plan` 更新，写进会话的
+  `Todo`（随 `state.json` 持久化），固定在对话头部下方显示；标题、完成进度与每步状态
+  实时更新，默认展开，可按会话折叠；
 - 工具开始/结束走 `chat/tool`（`running` → `ok`/`denied`/`error`/`timeout`），
   `App.BotTool` 按 `turn + id` 建卡片并更新参数、结果、耗时；卡片**默认折叠**，只显示工具名、
   状态与耗时，点标题才展开参数和结果；

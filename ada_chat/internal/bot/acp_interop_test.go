@@ -69,6 +69,18 @@ func (l *lockedApp) approvals() []app.Approval {
 	return append([]app.Approval(nil), l.a.Approvals...)
 }
 
+func (l *lockedApp) todo(sessionID int) *app.Todo {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s := l.a.SessionByID(sessionID)
+	if s == nil || s.Todo == nil {
+		return nil
+	}
+	cp := *s.Todo
+	cp.Steps = append([]app.TodoStep(nil), s.Todo.Steps...)
+	return &cp
+}
+
 // TestACPInterop 用真实 ada acp 进程跑一轮,验证 supervisor 的 ACP 分支。
 // 未配置环境变量时跳过:
 //
@@ -167,6 +179,10 @@ func TestACPInterop(t *testing.T) {
 			if strings.Contains(text, "ACP agent") {
 				if tools == 0 {
 					t.Fatal("ACP 工具事件没有映射成工具卡片")
+				}
+				todo := l.todo(sessionID)
+				if todo == nil || len(todo.Steps) != 2 {
+					t.Fatalf("ACP plan 事件没有映射成任务列表: %+v", todo)
 				}
 				return
 			}

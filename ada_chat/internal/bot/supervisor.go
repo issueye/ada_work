@@ -441,6 +441,11 @@ func (s *Supervisor) acpNotification(r *instance, n acp.Notification) {
 		Status        string          `json:"status"`
 		RawInput      json.RawMessage `json:"rawInput"`
 		RawOutput     json.RawMessage `json:"rawOutput"`
+		Entries       []struct {
+			Content  string `json:"content"`
+			Status   string `json:"status"`
+			Priority string `json:"priority"`
+		} `json:"entries"`
 	}
 	if json.Unmarshal(p.Update, &u) != nil {
 		return
@@ -483,6 +488,14 @@ func (s *Supervisor) acpNotification(r *instance, n acp.Notification) {
 		s.app.BotTool(bind.BotID, bind.Turn, app.ToolEvent{
 			ID: u.ToolCallID, Status: status, Text: text,
 		})
+	case "plan":
+		steps := make([]app.TodoStep, 0, len(u.Entries))
+		for _, entry := range u.Entries {
+			steps = append(steps, app.TodoStep{
+				Content: entry.Content, Status: entry.Status, Priority: entry.Priority,
+			})
+		}
+		s.app.BotTodo(bind.BotID, bind.Turn, app.Todo{Title: u.Title, Steps: steps})
 	}
 }
 
@@ -795,6 +808,27 @@ func (s *Supervisor) events(r *instance, p rpc.Peer) {
 						ID: d.ID, Name: d.Name, Args: d.Args, Status: d.Status, Text: d.Text,
 						Duration: time.Duration(d.DurationMS) * time.Millisecond,
 					})
+				}
+			}
+		case "chat/plan":
+			var d struct {
+				Turn  int    `json:"turn"`
+				Title string `json:"title"`
+				Steps []struct {
+					Content  string `json:"content"`
+					Status   string `json:"status"`
+					Priority string `json:"priority"`
+				} `json:"steps"`
+			}
+			if json.Unmarshal(ev.Data, &d) == nil && d.Turn > 0 {
+				if id := s.turnOwner(r, d.Turn); id > 0 {
+					steps := make([]app.TodoStep, 0, len(d.Steps))
+					for _, step := range d.Steps {
+						steps = append(steps, app.TodoStep{
+							Content: step.Content, Status: step.Status, Priority: step.Priority,
+						})
+					}
+					s.app.BotTodo(id, d.Turn, app.Todo{Title: d.Title, Steps: steps})
 				}
 			}
 		case "chat/done":

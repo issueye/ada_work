@@ -44,6 +44,7 @@ func (u *UI) chatPanel(c *mui.Context) {
 			}
 			u.chatHeader(c, tk)
 			mui.Box(c).Height(1).Shrink(0).Background(tk.BorderSecondary)
+			u.todoPanel(c, tk)
 			mui.Column(c).Grow(1).Basis(0).MinHeight(0).AlignItems(mui.Center).Children(func() {
 				u.transcript(c, tk)
 			})

@@ -134,6 +134,12 @@ func (a *App) normalizeRestored() {
 			msgs = append(msgs, m)
 		}
 		s.Messages = msgs
+		if s.Todo != nil {
+			normalizeTodo(s.Todo)
+			if len(s.Todo.Steps) == 0 {
+				s.Todo = nil
+			}
+		}
 		sessions = append(sessions, s)
 	}
 	a.Sessions = sessions

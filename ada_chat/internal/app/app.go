@@ -54,6 +54,8 @@ type Session struct {
 	Queue    []string   `json:"queue,omitempty"`
 	BotID    int        `json:"botId"`
 	Messages []*Message `json:"messages,omitempty"`
+	// Todo 是 agent 当前的任务计划;随会话持久化,重启后仍可查看。
+	Todo *Todo `json:"todo,omitempty"`
 }
 
 // Prefs 是用户在设置里保存的偏好。它同时写进本机配置文件。
