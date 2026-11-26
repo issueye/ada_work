@@ -144,8 +144,8 @@ func (s *Service) prompt(ctx context.Context, raw json.RawMessage) (json.RawMess
 	m.updatedAt = time.Now()
 	s.mu.Unlock()
 
-	// 把本轮新增的 session 事件投影成 control/update;订阅从最后一条之后开始,
-	// 不重放历史。Run 返回时 Append 已结束,剩余队列可以直接排空。
+	// 把本轮新增的 session 事件实时投影成 control/update:转发 goroutine 与
+	// Run 并发,适配器才能在工具执行期间推送进度;Run 返回后再排空队列。
 	var updates <-chan session.Event
 	var dispose kernel.Dispose
 	if s.bus != nil && m.sess != nil {
@@ -155,26 +155,44 @@ func (s *Service) prompt(ctx context.Context, raw json.RawMessage) (json.RawMess
 		}
 		updates, dispose = m.sess.Subscribe(from)
 	}
+	emitCtx := context.WithoutCancel(ctx)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	if updates != nil {
+		go func() {
+			defer close(done)
+			for {
+				select {
+				case ev, ok := <-updates:
+					if !ok {
+						return
+					}
+					s.emit(emitCtx, req.SessionID, ev)
+				case <-stop:
+					// Run 已返回,把订阅队列里剩余的事件排空后退出。
+					for {
+						select {
+						case ev, ok := <-updates:
+							if !ok {
+								return
+							}
+							s.emit(emitCtx, req.SessionID, ev)
+						default:
+							return
+						}
+					}
+				}
+			}
+		}()
+	}
 	res, err := s.runner.Run(runCtx, m.sess, req.Text)
 	cancel()
+	if updates != nil {
+		close(stop)
+		<-done
+	}
 	if dispose != nil {
 		_ = dispose(context.Background())
-	}
-	if updates != nil {
-		for {
-			select {
-			case ev, ok := <-updates:
-				if !ok {
-					goto drained
-				}
-				s.bus.EmitContext(ctx, control.EventUpdate, control.Update{
-					SessionID: req.SessionID, TurnID: ev.TurnID, Kind: ev.Type, Data: ev.Data,
-				})
-			default:
-				goto drained
-			}
-		}
-	drained:
 	}
 	s.mu.Lock()
 	if m.seq == seq {
@@ -186,6 +204,17 @@ func (s *Service) prompt(ctx context.Context, raw json.RawMessage) (json.RawMess
 		return nil, control.Unavailable("prompt 失败: " + err.Error())
 	}
 	return json.Marshal(control.TurnResult{ID: res.TurnID, Text: res.Text, StopReason: "end_turn"})
+}
+
+// emit 把一条会话事件广播成 control/update。
+// 事件顺序由订阅队列保证;EmitContext 只做广播,不阻塞 Run。
+func (s *Service) emit(ctx context.Context, sessionID string, ev session.Event) {
+	if s.bus == nil {
+		return
+	}
+	s.bus.EmitContext(ctx, control.EventUpdate, control.Update{
+		SessionID: sessionID, TurnID: ev.TurnID, Kind: ev.Type, Data: ev.Data,
+	})
 }
 
 func (s *Service) cancel(raw json.RawMessage) (json.RawMessage, error) {
@@ -212,21 +241,41 @@ func (s *Service) permission(ctx context.Context, raw json.RawMessage) (json.Raw
 	if s.approval == nil {
 		return nil, control.Unimplemented("没有 approval 服务")
 	}
-	decision, err := approval.Ask(ctx, s.approval, "", approval.Request{
+	details := map[string]any{"sessionId": req.SessionID}
+	if req.ToolCallID != "" {
+		details["toolCallId"] = req.ToolCallID
+	}
+	decision, err := approval.Ask(ctx, s.approval, req.Backend, approval.Request{
 		Source: "control", Op: req.Tool, Target: req.Title, Reason: req.Detail,
-		Details: map[string]any{"sessionId": req.SessionID},
+		Details: details,
 	})
 	if err != nil {
 		return nil, control.Denied("权限请求失败: " + err.Error())
 	}
-	out := control.PermissionDecision{OptionID: "deny"}
+	out := control.PermissionDecision{OptionID: control.OptionRejectOnce}
 	if decision.Allow {
-		out.OptionID = "allow"
-		if len(req.Options) > 0 {
-			out.OptionID = req.Options[0].ID
+		out.OptionID = control.OptionAllowOnce
+		for _, o := range req.Options {
+			if optionAllows(o) {
+				out.OptionID = o.ID
+				break
+			}
 		}
 	}
 	return json.Marshal(out)
+}
+
+// optionAllows 判断选项是否表示放行;Kind 缺失时回退到 ID。
+func optionAllows(o control.PermissionOption) bool {
+	switch o.Kind {
+	case control.OptionAllowOnce, control.OptionAllowAlways:
+		return true
+	}
+	switch o.ID {
+	case control.OptionAllowOnce, control.OptionAllowAlways:
+		return true
+	}
+	return false
 }
 
 func (s *Service) close(raw json.RawMessage) (json.RawMessage, error) {

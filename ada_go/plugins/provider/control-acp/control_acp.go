@@ -7,8 +7,8 @@
 //   - session/prompt
 //   - session/cancel
 //
-// 流式 session/update 可通过 SetUpdates 注入;文件/终端回调与
-// request_permission 仍待接。
+// 流式 session/update 可通过 SetUpdates 注入;权限请求通过 Approver/BindApproval
+// 接到 approval(见 permission.go);文件/终端回调仍待接。
 package controlacp
 
 import (

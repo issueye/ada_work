@@ -80,19 +80,33 @@ type Update struct {
 	Data      json.RawMessage `json:"data,omitempty"`
 }
 
-// PermissionOption 是权限请求中的一个选项。
+// 权限选项的语义类别;协议适配器据此判断「允许 / 拒绝」,不靠文案猜。
+const (
+	OptionAllowOnce    = "allow_once"
+	OptionAllowAlways  = "allow_always"
+	OptionRejectOnce   = "reject_once"
+	OptionRejectAlways = "reject_always"
+)
+
+// PermissionOption 是权限请求中的一个选项。Kind 取上面的常量;
+// 为空时适配器回退到 ID,仍无法判断时按拒绝处理(fail-closed)。
 type PermissionOption struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
+	Kind  string `json:"kind,omitempty"`
 }
 
 // PermissionRequest 是 agent 向 client 发起的权限请求。
 type PermissionRequest struct {
-	SessionID string             `json:"sessionId"`
-	Tool      string             `json:"tool,omitempty"`
-	Title     string             `json:"title"`
-	Detail    string             `json:"detail,omitempty"`
-	Options   []PermissionOption `json:"options,omitempty"`
+	SessionID  string `json:"sessionId"`
+	Tool       string `json:"tool,omitempty"`
+	ToolCallID string `json:"toolCallId,omitempty"`
+	// Backend 指定审批人;空表示由 approval 取默认审批人。
+	// ACP 场景下调用方应显式传 control-acp 的审批人名,避免与宿主审批人混淆。
+	Backend string             `json:"backend,omitempty"`
+	Title   string             `json:"title"`
+	Detail  string             `json:"detail,omitempty"`
+	Options []PermissionOption `json:"options,omitempty"`
 }
 
 // PermissionDecision 是 client 对权限请求的回答。
@@ -193,8 +207,9 @@ func (c *Client) RequestPermission(ctx context.Context, req PermissionRequest) (
 	return decision, nil
 }
 
-func (c *Client) Close(ctx context.Context) error {
-	_, err := c.invoke(ctx, MethodSessionClose, map[string]any{})
+// Close 关闭一个会话;会话 id 必填,关闭的是会话而不是控制层本身。
+func (c *Client) Close(ctx context.Context, sessionID string) error {
+	_, err := c.invoke(ctx, MethodSessionClose, map[string]string{"sessionId": sessionID})
 	return err
 }
 

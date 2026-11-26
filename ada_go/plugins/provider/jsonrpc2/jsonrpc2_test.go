@@ -92,3 +92,27 @@ func TestReadMessageLimit(t *testing.T) {
 		t.Fatalf("正常读取失败: %+v %v", msg, err)
 	}
 }
+
+func TestHandlerContextCanceledOnClose(t *testing.T) {
+	a, b := pipePair(t)
+	got := make(chan context.Context, 1)
+	b.Handle("wait", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		got <- ctx
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	go func() { _ = a.Call(context.Background(), "wait", nil, nil) }()
+
+	var hctx context.Context
+	select {
+	case hctx = <-got:
+	case <-time.After(time.Second):
+		t.Fatal("handler 没有收到请求")
+	}
+	_ = b.Close()
+	select {
+	case <-hctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("连接关闭后 handler ctx 未取消")
+	}
+}

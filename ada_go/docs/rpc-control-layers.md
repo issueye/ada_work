@@ -1,6 +1,6 @@
 # RPC/ACP 五层控制架构
 
-> 状态：**第 2 层控制契约 + Go/TS 实现、第 3 层 control-rpc/ACP 最小适配、第 4 层 jsonrpc2、第 5 层 stdio 已落地**；ACP 的 permission/文件终端待接。
+> 状态：**第 2 层控制契约 + Go/TS 实现、第 3 层 control-rpc/ACP 适配、第 4 层 jsonrpc2、第 5 层 stdio 已落地**；ACP 的 permission 已接，文件/终端回调待做。
 > 关联：[seam-rpc.md](seam-rpc.md)、[AGENTS §2/§3](../AGENTS.md)。
 
 ## 0. 结论
@@ -81,10 +81,12 @@ Go 与 TS 必须实现同一组方法：
 | `session.prompt` | `PromptRequest` | `TurnResult` |
 | `session.cancel` | `{sessionId}` | `{}` |
 | `session.permission` | `PermissionRequest` | `PermissionDecision` |
-| `session.close` | `{}` | `{}` |
+| `session.close` | `{sessionId}` | `{}` |
 
 流式片段不放在 `session.prompt` 的返回值里，而是发 `control/update` 事件；
 ACP 协议适配器把它映射成 `session/update`，RPC 适配器映射成事件订阅。
+`core/agent-control` 在 `Run` 执行期间就转发事件，因此工具调用/中间消息能在
+prompt 未返回时到达对端（不是结束后补发）。
 
 ## 3. 已落地与未落地
 
@@ -95,9 +97,9 @@ ACP 协议适配器把它映射成 `session/update`，RPC 适配器映射成事�
 | `core/agent-control` | 2 实现 | ✅ `agent.runner` → `control.Invoker`；create/load/list/prompt/cancel/permission/close |
 | `seam/agent` | 能力契约 | ✅ `Runner`（Open/Run） |
 | `provider/rpc-json` | 3+4 | ◐ 现有 v1 协议；尚未拆成 control 适配 + frame 通道 |
-| `provider/control-rpc` | 3 | ✅ v1 方法 ↔ `control.Invoker`（Client + Register） |
-| `provider/jsonrpc2` | 4 | ✅ 双向 JSON-RPC 2.0 连接、id/错误/通知、行上限 |
-| `provider/control-acp` | 3 | ✅ initialize/session/new/load/prompt/cancel；`SetUpdates` 注入后转发 session/update；无 permission/fs/terminal |
+| `provider/control-rpc` | 3 | ✅ v1 方法 ↔ `control.Invoker`（Client + Register）；已用真实 rpc-json + tcp 跑通端到端 |
+| `provider/jsonrpc2` | 4 | ✅ 双向 JSON-RPC 2.0 连接、id/错误/通知、行上限；连接关闭会取消 handler ctx |
+| `provider/control-acp` | 3 | ✅ initialize/session/new/load/prompt/cancel；`session/update` 实时转发；`session/request_permission` + `approval.Approver`；无 fs/terminal |
 | `provider/rpc-stdio` | 5 | ✅ stdio 单连接 Transport + Listener |
 
 ## 4. 为什么 TS 实现不破坏插件系统
@@ -116,9 +118,10 @@ ACP 协议适配器把它映射成 `session/update`，RPC 适配器映射成事�
 ## 5. Go 实现边界
 
 `core/agent-control` 目前是同步实现：`session.prompt` 阻塞到一轮结束并返回最终结果；
-它会在 `Run` 返回后把本轮新增的 session 事件投影成 `control/update`，
-形状已通，但不是逐 token 实时。ACP 的流式 `session/update` 可先消费这些事件，
-后续再改成边跑边发。
+但它会在 `Run` 执行期间并发转发本轮新增的 session 事件（`control/update`），
+所以工具调用与中间消息能在 prompt 未返回时到达适配器。粒度是「事件」而不是
+「token 增量」：`assistant/message` 是整段消息，真正的逐 token 需要 `llm.stream`
+回调进入 session 事件，属于后续工作。
 
 ## 6. 协议适配方向
 
@@ -146,25 +149,38 @@ session/load        -> Client.Load
 session/prompt      -> Client.Prompt
 session/cancel      -> Client.Cancel
 session/update      <- control/update 事件
-session/request_permission -> Client.RequestPermission
 ```
 
+权限是反方向的：agent 内的 `approval.Ask` 调用 ACP client：
+
+```go
+ep := controlacp.New(conn, control.New(invoker))
+dispose, err := ep.BindApproval(ctx)   // 注册 approval.Approver("acp-client")
+// 其它插件按名选择: control.PermissionRequest{Backend: controlacp.ApproverName}
+```
+
+`approval.Approver.Approve` 发 `session/request_permission`（服务端 → 客户端请求），
+把返回的 `outcome.selected` 映射成 allow/reject；取消、未知选项、连接错误都按拒绝处理
+（fail-closed），超时由 `approval.Ask` 的 30s 默认值兜底。
+
 ACP 的文件/终端回调应在控制层实现“按会话路由”，不能直接复用全局 `seam/fs`/`seam/shell`
-链；这是一期最大的设计风险。
+链；这是一期最大的设计风险，也是下一步。
 
 ## 7. 迁移顺序
 
 1. 控制契约 + Go/TS 实现通路（已完成；Go 由 `core/agent-control`，TS 由 bridge 包装）；
 2. `provider/jsonrpc2` + `provider/rpc-stdio`（已完成）；
-3. `provider/control-rpc`，把现有 v1 消费者切到控制层（适配器已完成，消费者迁移待做）；
+3. `provider/control-rpc`，把现有 v1 消费者切到控制层（适配器 + 真实 rpc-json/tcp 端到端已完成，消费者迁移待做）；
 4. `provider/control-acp` 最小聊天闭环（已完成）；
-5. 再补权限、文件、终端、MCP 与会话级路由。
+5. 权限（已完成）：`session/request_permission` ↔ `approval.Approver`；
+6. 再补文件、终端、MCP 与会话级路由。
 
 ## 8. 验证
 
 ```powershell
-go test ./plugins/seam/control ./platform/bridge
-go test -race ./plugins/seam/control ./platform/bridge
+go test ./plugins/seam/control ./plugins/provider/control-rpc ./plugins/provider/control-acp
+go test -race ./plugins/seam/control ./plugins/provider/control-rpc ./plugins/provider/control-acp ./plugins/core/agent-control
+go test -run TestControlOverRPCJSON -v ./plugins/provider/control-rpc
 ```
 
 Go 与 TS 的契约测试应共享同一组 JSON fixture；任何新增方法必须同时更新

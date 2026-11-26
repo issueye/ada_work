@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/issueye/ada_go_v2/platform/kernel"
 	controlacp "github.com/issueye/ada_go_v2/plugins/provider/control-acp"
 	"github.com/issueye/ada_go_v2/plugins/provider/jsonrpc2"
+	"github.com/issueye/ada_go_v2/plugins/seam/approval"
 	"github.com/issueye/ada_go_v2/plugins/seam/control"
 )
 
@@ -104,5 +107,137 @@ func TestACPInitializeAndPrompt(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("没有收到 session/update")
+	}
+}
+
+// acpClient 创建一个测试用的 ACP 客户端/服务端对。
+func acpClient(t *testing.T, fake *fakeControl) (*jsonrpc2.Conn, *controlacp.Endpoint, context.Context) {
+	t.Helper()
+	a, b := net.Pipe()
+	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	t.Cleanup(cancel)
+	client := jsonrpc2.New(ctx, a)
+	server := jsonrpc2.New(ctx, b)
+	ep := controlacp.New(server, control.New(fake))
+	t.Cleanup(func() { _ = ep.Close() })
+	return client, ep, ctx
+}
+
+func TestACPRequestPermission(t *testing.T) {
+	client, ep, ctx := acpClient(t, &fakeControl{})
+	seen := make(chan map[string]any, 1)
+	client.Handle("session/request_permission", func(_ context.Context, params json.RawMessage) (any, error) {
+		var in map[string]any
+		if err := json.Unmarshal(params, &in); err != nil {
+			return nil, err
+		}
+		seen <- in
+		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "allow_once"}}, nil
+	})
+
+	dec, err := ep.RequestPermission(ctx, control.PermissionRequest{
+		SessionID: "s1", Tool: "fs.write", ToolCallID: "call-1", Title: "写入文件",
+	})
+	if err != nil {
+		t.Fatalf("request_permission 失败: %v", err)
+	}
+	if dec.Cancelled || dec.OptionID != control.OptionAllowOnce {
+		t.Fatalf("权限决定不符: %+v", dec)
+	}
+	select {
+	case in := <-seen:
+		if in["sessionId"] != "s1" {
+			t.Fatalf("sessionId 不符: %+v", in)
+		}
+		toolCall, _ := in["toolCall"].(map[string]any)
+		if toolCall["toolCallId"] != "call-1" || toolCall["title"] != "写入文件" {
+			t.Fatalf("toolCall 不符: %+v", toolCall)
+		}
+		options, _ := in["options"].([]any)
+		if len(options) != 2 {
+			t.Fatalf("默认选项数量不符: %+v", options)
+		}
+		first, _ := options[0].(map[string]any)
+		if first["optionId"] != control.OptionAllowOnce || first["kind"] != control.OptionAllowOnce {
+			t.Fatalf("选项映射不符: %+v", first)
+		}
+	case <-ctx.Done():
+		t.Fatal("client 没有收到权限请求")
+	}
+}
+
+func TestACPRequestPermissionCancelled(t *testing.T) {
+	client, ep, ctx := acpClient(t, &fakeControl{})
+	client.Handle("session/request_permission", func(context.Context, json.RawMessage) (any, error) {
+		return map[string]any{"outcome": map[string]any{"outcome": "cancelled"}}, nil
+	})
+	dec, err := ep.RequestPermission(ctx, control.PermissionRequest{SessionID: "s1", Tool: "shell.run"})
+	if err != nil {
+		t.Fatalf("request_permission 失败: %v", err)
+	}
+	if !dec.Cancelled {
+		t.Fatalf("取消应映射成 Cancelled: %+v", dec)
+	}
+}
+
+func TestACPBindApproval(t *testing.T) {
+	client, ep, ctx := acpClient(t, &fakeControl{})
+	mode := control.OptionAllowOnce
+	var mu sync.Mutex
+	client.Handle("session/request_permission", func(_ context.Context, _ json.RawMessage) (any, error) {
+		mu.Lock()
+		m := mode
+		mu.Unlock()
+		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": m}}, nil
+	})
+	setMode := func(m string) {
+		mu.Lock()
+		mode = m
+		mu.Unlock()
+	}
+
+	app := kernel.New(kernel.Options{})
+	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	if _, err := app.Plugin(approval.Plugin(), kernel.NewConfig(nil)); err != nil {
+		t.Fatalf("挂载 approval 失败: %v", err)
+	}
+	reg, err := kernel.Service[*approval.Registry](app.Root(), "approval")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispose, err := ep.BindApproval(app.Root())
+	if err != nil {
+		t.Fatalf("BindApproval 失败: %v", err)
+	}
+	t.Cleanup(func() { _ = dispose(context.Background()) })
+	if names := reg.Names(); len(names) != 1 || names[0] != controlacp.ApproverName {
+		t.Fatalf("审批人注册不符: %+v", names)
+	}
+
+	dec, err := approval.Ask(ctx, reg, controlacp.ApproverName, approval.Request{
+		Source: "control", Op: "fs.write", Target: "写入文件",
+		Details: map[string]any{"sessionId": "s1", "toolCallId": "call-1"},
+	})
+	if err != nil || !dec.Allow || dec.Approver != controlacp.ApproverName {
+		t.Fatalf("允许路径不符: %+v err=%v", dec, err)
+	}
+
+	setMode(control.OptionRejectOnce)
+	dec, err = approval.Ask(ctx, reg, controlacp.ApproverName, approval.Request{
+		Source: "control", Op: "fs.write", Target: "写入文件",
+		Details: map[string]any{"sessionId": "s1"},
+	})
+	if err != nil || dec.Allow {
+		t.Fatalf("拒绝路径不符: %+v err=%v", dec, err)
+	}
+
+	setMode("unknown-option")
+	dec, err = approval.Ask(ctx, reg, controlacp.ApproverName, approval.Request{
+		Source: "control", Op: "fs.write", Target: "写入文件",
+		Details: map[string]any{"sessionId": "s1"},
+	})
+	if err != nil || dec.Allow {
+		t.Fatalf("未知选项应 fail-closed: %+v err=%v", dec, err)
 	}
 }

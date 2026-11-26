@@ -113,19 +113,25 @@ type Conn struct {
 
 	done      chan struct{}
 	closeOnce sync.Once
+	cancel    context.CancelFunc
+	ctx       context.Context
 	errMu     sync.Mutex
 	err       error
 	seq       atomic.Uint64
 }
 
 // New 创建连接并启动读循环;ctx 取消会关闭连接。
+//
+// 入站方法的 handler 使用连接作用域的 ctx:连接关闭(对端断开、读写失败、
+// 调用方取消)会一并取消 handler,长任务(如 ACP prompt)不会变成孤儿。
 func New(ctx context.Context, rw io.ReadWriteCloser, opts ...Option) *Conn {
 	o := options{maxLine: defaultMaxLine}
 	for _, fn := range opts {
 		fn(&o)
 	}
+	connCtx, cancel := context.WithCancel(ctx)
 	c := &Conn{
-		rw: rw, br: bufio.NewReader(rw), opt: o,
+		rw: rw, br: bufio.NewReader(rw), opt: o, ctx: connCtx, cancel: cancel,
 		handlers: make(map[string]Handler), pending: make(map[string]chan Message),
 		done: make(chan struct{}),
 	}
@@ -210,6 +216,7 @@ func (c *Conn) Notify(ctx context.Context, method string, params any) error {
 // Close 关闭连接;可重复调用。
 func (c *Conn) Close() error {
 	c.closeOnce.Do(func() {
+		c.cancel()
 		close(c.done)
 		_ = c.rw.Close()
 	})
@@ -299,7 +306,7 @@ func (c *Conn) dispatch(msg Message, reply bool) {
 		}
 		return
 	}
-	out, err := h(context.Background(), msg.Params)
+	out, err := h(c.ctx, msg.Params)
 	if !reply {
 		return
 	}
