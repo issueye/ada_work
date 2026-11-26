@@ -214,3 +214,131 @@ func TestGoControlPermissionPicksAllowOption(t *testing.T) {
 		t.Fatalf("应选中放行选项: %+v", dec)
 	}
 }
+
+// streamingRunner 在 Run 里先发两段 agent/delta,再落一条 assistant/message;
+// 控制层应当只发增量、跳过整条消息。
+type streamingRunner struct {
+	reg *session.Registry
+	bus *kernel.Context
+}
+
+func (r *streamingRunner) Open(ctx context.Context, meta session.Meta) (session.Session, error) {
+	return r.reg.Open(ctx, "", meta)
+}
+
+func (r *streamingRunner) Run(ctx context.Context, sess session.Session, _ string) (seamagent.Result, error) {
+	for _, part := range []string{"你", "好"} {
+		r.bus.EmitContext(ctx, seamagent.EventDelta, seamagent.DeltaEvent{
+			SessionID: sess.ID(), TurnID: "t1", StepID: "s1", Kind: "text", Text: part,
+		})
+	}
+	if _, err := sess.Append(session.Event{
+		Type: session.TypeAssistantMessage, TurnID: "t1", StepID: "s1",
+		Data: json.RawMessage(`{"message":{"content":[{"kind":"text","text":"你好"}]}}`),
+	}); err != nil {
+		return seamagent.Result{}, err
+	}
+	return seamagent.Result{TurnID: "t1", Text: "你好"}, nil
+}
+
+func TestGoControlStreamsDeltas(t *testing.T) {
+	sr := &streamingRunner{}
+	app, c := mount(t, func(reg *session.Registry) seamagent.Runner {
+		sr.reg = reg
+		return sr
+	})
+	sr.bus = app.Root()
+	info, err := c.Create(context.Background(), control.CreateRequest{Title: "stream"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updates := make(chan control.Update, 16)
+	dispose := app.Root().On(control.EventUpdate, func(_ context.Context, _ *kernel.Context, args []any) (any, error) {
+		if len(args) > 0 {
+			if u, ok := args[0].(control.Update); ok {
+				updates <- u
+			}
+		}
+		return nil, nil
+	})
+	defer func() { _ = dispose(context.Background()) }()
+
+	turn, err := c.Prompt(context.Background(), control.PromptRequest{SessionID: info.ID, Text: "hi"})
+	if err != nil || turn.Text != "你好" {
+		t.Fatalf("prompt 结果不符: %+v err=%v", turn, err)
+	}
+	var texts []string
+	for {
+		select {
+		case u := <-updates:
+			if u.Kind == session.TypeAssistantMessage {
+				t.Fatalf("已有增量时不应再发整条 assistant 消息: %+v", u)
+			}
+			if u.Kind == "assistant/delta" {
+				var d struct {
+					Text string `json:"text"`
+				}
+				_ = json.Unmarshal(u.Data, &d)
+				texts = append(texts, d.Text)
+			}
+		default:
+			goto drained
+		}
+	}
+drained:
+	if len(texts) != 2 || texts[0] != "你" || texts[1] != "好" {
+		t.Fatalf("增量顺序不符: %+v", texts)
+	}
+}
+
+// cancelRunner 一直阻塞到 ctx 取消,用于验证取消映射成 cancelled。
+type cancelRunner struct {
+	reg     *session.Registry
+	started chan struct{}
+}
+
+func (r cancelRunner) Open(ctx context.Context, meta session.Meta) (session.Session, error) {
+	return r.reg.Open(ctx, "", meta)
+}
+
+func (r cancelRunner) Run(ctx context.Context, _ session.Session, _ string) (seamagent.Result, error) {
+	close(r.started)
+	<-ctx.Done()
+	return seamagent.Result{TurnID: "t1"}, ctx.Err()
+}
+
+func TestGoControlCancelReturnsCancelled(t *testing.T) {
+	started := make(chan struct{})
+	_, c := mount(t, func(reg *session.Registry) seamagent.Runner {
+		return cancelRunner{reg: reg, started: started}
+	})
+	info, err := c.Create(context.Background(), control.CreateRequest{Title: "cancel"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		turn control.TurnResult
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		turn, perr := c.Prompt(context.Background(), control.PromptRequest{SessionID: info.ID, Text: "hi"})
+		done <- result{turn, perr}
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("prompt 没有启动")
+	}
+	if err := c.Cancel(context.Background(), info.ID); err != nil {
+		t.Fatalf("cancel 失败: %v", err)
+	}
+	select {
+	case res := <-done:
+		if res.err != nil || res.turn.StopReason != "cancelled" {
+			t.Fatalf("取消应返回 cancelled: %+v err=%v", res.turn, res.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("取消后 prompt 没有返回")
+	}
+}

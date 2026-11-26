@@ -1223,6 +1223,10 @@ func TestACPServe(t *testing.T) {
 	if strings.Contains(joined, `"message"`) {
 		t.Fatalf("assistant 文本不应是原始 JSON: %q", joined)
 	}
+	// 整段消息只会有两段(两个 assistant 消息);>=3 说明是 token 增量。
+	if len(chunks) < 3 {
+		t.Fatalf("assistant 文本应拆成多个增量,实际 %d 段: %q", len(chunks), joined)
+	}
 
 	_ = inW.Close()
 	select {

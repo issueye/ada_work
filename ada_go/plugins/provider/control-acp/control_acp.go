@@ -212,7 +212,7 @@ func (e *Endpoint) forwardUpdates(ch <-chan control.Update) {
 func sessionUpdateParams(u control.Update) map[string]any {
 	update := map[string]any{"sessionUpdate": u.Kind}
 	switch u.Kind {
-	case "assistant/message", "assistant_message":
+	case "assistant/message", "assistant_message", "assistant/delta", "assistant_delta":
 		text, recognized := assistantText(u.Data)
 		if !recognized {
 			// 未知形状:原样透出,至少不丢内容。

@@ -94,7 +94,7 @@ prompt 未返回时到达对端（不是结束后补发）。
 |---|---|---|
 | `plugins/seam/control` | 2 | ✅ 契约、`Client`、`Invoker`、Go/TS 契约测试 |
 | `platform/bridge`（control 包装） | 2 适配 | ✅ TS `ctx.provide("control")` 自动包装 |
-| `core/agent-control` | 2 实现 | ✅ `agent.runner` → `control.Invoker`；create/load/list/prompt/cancel/permission/close |
+| `core/agent-control` | 2 实现 | ✅ `agent.runner` → `control.Invoker`；create/load/list/prompt/cancel/permission/close；token 级 `assistant/delta`；取消返回 `cancelled` |
 | `seam/agent` | 能力契约 | ✅ `Runner`（Open/Run） |
 | `provider/rpc-json` | 3+4 | ◐ 现有 v1 协议；尚未拆成 control 适配 + frame 通道 |
 | `provider/control-rpc` | 3 | ✅ v1 方法 ↔ `control.Invoker`（Client + Register）；已用真实 rpc-json + tcp 跑通端到端 |
@@ -120,9 +120,13 @@ prompt 未返回时到达对端（不是结束后补发）。
 
 `core/agent-control` 目前是同步实现：`session.prompt` 阻塞到一轮结束并返回最终结果；
 但它会在 `Run` 执行期间并发转发本轮新增的 session 事件（`control/update`），
-所以工具调用与中间消息能在 prompt 未返回时到达适配器。粒度是「事件」而不是
-「token 增量」：`assistant/message` 是整段消息，真正的逐 token 需要 `llm.stream`
-回调进入 session 事件，属于后续工作。
+所以工具调用与中间消息能在 prompt 未返回时到达适配器。
+
+token 级流式：`agent-loop` 在每次 `llm/stream` 回调后发 `agent/delta`
+（`{sessionId,turnId,stepId,kind,text}`），`agent-control` 在 prompt 期间订阅并投影成
+`control/update` 的 `assistant/delta`。同一 step 一旦有增量，就跳过该 step 的
+`assistant/message`，避免客户端重复显示；没有增量的 provider 仍发整段消息。
+`agent/delta` 不写进 session，也不参与 `render`。
 
 ACP 适配器从会话事件里提取文本，而不是把整段 JSON 当文本：
 `assistant/message` 的 `{"message":{"content":[{"kind":"text","text":...}]}}`
@@ -165,10 +169,14 @@ session/load        -> Client.Load
 session/prompt      -> Client.Prompt
 session/cancel      -> Client.Cancel
 session/update      <- control/update 事件
+  assistant/delta   -> agent_message_chunk
   assistant/message -> agent_message_chunk
   tool/call         -> tool_call
   tool/result       -> tool_call_update
 ```
+
+`session/cancel` 取消当前轮后，`session/prompt` 返回 `stopReason: "cancelled"`
+（不是 JSON-RPC 错误）；其它失败才是错误。
 
 权限是反方向的：agent 内的 `approval.Ask` 调用 ACP client：
 

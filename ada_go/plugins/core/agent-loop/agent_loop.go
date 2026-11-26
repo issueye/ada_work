@@ -166,6 +166,14 @@ func (a *Agent) Run(ctx context.Context, sess session.Session, userText string) 
 				if _, werr := a.bus.Waterfall(ctx, llm.EventStream, &delta); werr != nil {
 					return werr
 				}
+				d = delta
+			}
+			if a.bus != nil && d.Kind == llm.DeltaText && d.Text != "" {
+				// 观察事件:控制层用它做 token 级流式;不是门禁,失败也不影响本轮。
+				a.bus.EmitContext(ctx, seamagent.EventDelta, seamagent.DeltaEvent{
+					SessionID: sess.ID(), TurnID: turn.ID, StepID: stepID,
+					Kind: string(d.Kind), Text: d.Text,
+				})
 			}
 			return nil
 		})

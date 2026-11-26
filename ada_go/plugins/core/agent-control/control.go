@@ -8,6 +8,7 @@ package controlgo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	seamagent "github.com/issueye/ada_go_v2/plugins/seam/agent"
 	"github.com/issueye/ada_go_v2/plugins/seam/approval"
 	"github.com/issueye/ada_go_v2/plugins/seam/control"
+	"github.com/issueye/ada_go_v2/plugins/seam/seamerr"
 	"github.com/issueye/ada_go_v2/plugins/seam/session"
 )
 
@@ -144,8 +146,35 @@ func (s *Service) prompt(ctx context.Context, raw json.RawMessage) (json.RawMess
 	m.updatedAt = time.Now()
 	s.mu.Unlock()
 
-	// 把本轮新增的 session 事件实时投影成 control/update:转发 goroutine 与
-	// Run 并发,适配器才能在工具执行期间推送进度;Run 返回后再排空队列。
+	// 本轮更新分两路进入 out:session 事件(工具/消息)与 agent/delta(token 增量)。
+	// 只有一个 forwarder 往总线写,保证 control/update 顺序稳定。
+	emitCtx := context.WithoutCancel(ctx)
+	out := make(chan control.Update, 256)
+	forwardDone := make(chan struct{})
+	go func() {
+		defer close(forwardDone)
+		for u := range out {
+			s.emitUpdate(emitCtx, u)
+		}
+	}()
+
+	type streamKey struct{ turnID, stepID string }
+	var (
+		streamMu sync.Mutex
+		streamed = make(map[streamKey]bool)
+	)
+	// assistantStreamed 判断 assistant/message 是否已有 token 增量:
+	// 有则跳过整条消息,避免客户端重复显示同一段文本。
+	assistantStreamed := func(ev session.Event) bool {
+		if ev.Type != session.TypeAssistantMessage {
+			return false
+		}
+		streamMu.Lock()
+		skip := streamed[streamKey{ev.TurnID, ev.StepID}]
+		streamMu.Unlock()
+		return skip
+	}
+
 	var updates <-chan session.Event
 	var dispose kernel.Dispose
 	if s.bus != nil && m.sess != nil {
@@ -155,19 +184,26 @@ func (s *Service) prompt(ctx context.Context, raw json.RawMessage) (json.RawMess
 		}
 		updates, dispose = m.sess.Subscribe(from)
 	}
-	emitCtx := context.WithoutCancel(ctx)
 	stop := make(chan struct{})
-	done := make(chan struct{})
+	sessionDone := make(chan struct{})
 	if updates != nil {
 		go func() {
-			defer close(done)
+			defer close(sessionDone)
+			push := func(ev session.Event) {
+				if assistantStreamed(ev) {
+					return
+				}
+				out <- control.Update{
+					SessionID: req.SessionID, TurnID: ev.TurnID, Kind: ev.Type, Data: ev.Data,
+				}
+			}
 			for {
 				select {
 				case ev, ok := <-updates:
 					if !ok {
 						return
 					}
-					s.emit(emitCtx, req.SessionID, ev)
+					push(ev)
 				case <-stop:
 					// Run 已返回,把订阅队列里剩余的事件排空后退出。
 					for {
@@ -176,7 +212,7 @@ func (s *Service) prompt(ctx context.Context, raw json.RawMessage) (json.RawMess
 							if !ok {
 								return
 							}
-							s.emit(emitCtx, req.SessionID, ev)
+							push(ev)
 						default:
 							return
 						}
@@ -185,12 +221,39 @@ func (s *Service) prompt(ctx context.Context, raw json.RawMessage) (json.RawMess
 			}
 		}()
 	}
+
+	var disposeDelta kernel.Dispose
+	if s.bus != nil {
+		disposeDelta = s.bus.On(seamagent.EventDelta, func(_ context.Context, _ *kernel.Context, args []any) (any, error) {
+			if len(args) == 0 {
+				return nil, nil
+			}
+			d, ok := args[0].(seamagent.DeltaEvent)
+			if !ok || d.SessionID != req.SessionID || d.Text == "" {
+				return nil, nil
+			}
+			streamMu.Lock()
+			streamed[streamKey{d.TurnID, d.StepID}] = true
+			streamMu.Unlock()
+			data, _ := json.Marshal(map[string]string{"text": d.Text})
+			out <- control.Update{
+				SessionID: d.SessionID, TurnID: d.TurnID, Kind: "assistant/delta", Data: data,
+			}
+			return nil, nil
+		})
+	}
+
 	res, err := s.runner.Run(runCtx, m.sess, req.Text)
 	cancel()
 	if updates != nil {
 		close(stop)
-		<-done
+		<-sessionDone
 	}
+	if disposeDelta != nil {
+		_ = disposeDelta(context.Background())
+	}
+	close(out)
+	<-forwardDone
 	if dispose != nil {
 		_ = dispose(context.Background())
 	}
@@ -201,20 +264,21 @@ func (s *Service) prompt(ctx context.Context, raw json.RawMessage) (json.RawMess
 	m.updatedAt = time.Now()
 	s.mu.Unlock()
 	if err != nil {
+		// 用户取消不是失败:返回 cancelled,协议适配器据此回 ACP stopReason。
+		if errors.Is(err, context.Canceled) || seamerr.Is(err, seamerr.ErrCanceled) {
+			return json.Marshal(control.TurnResult{ID: res.TurnID, StopReason: "cancelled"})
+		}
 		return nil, control.Unavailable("prompt 失败: " + err.Error())
 	}
 	return json.Marshal(control.TurnResult{ID: res.TurnID, Text: res.Text, StopReason: "end_turn"})
 }
 
-// emit 把一条会话事件广播成 control/update。
-// 事件顺序由订阅队列保证;EmitContext 只做广播,不阻塞 Run。
-func (s *Service) emit(ctx context.Context, sessionID string, ev session.Event) {
+// emitUpdate 把一条控制更新广播到总线;输出顺序由调用方保证。
+func (s *Service) emitUpdate(ctx context.Context, u control.Update) {
 	if s.bus == nil {
 		return
 	}
-	s.bus.EmitContext(ctx, control.EventUpdate, control.Update{
-		SessionID: sessionID, TurnID: ev.TurnID, Kind: ev.Type, Data: ev.Data,
-	})
+	s.bus.EmitContext(ctx, control.EventUpdate, u)
 }
 
 func (s *Service) cancel(raw json.RawMessage) (json.RawMessage, error) {
