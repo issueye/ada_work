@@ -96,6 +96,15 @@ type Binding struct {
 	Workspace ID
 }
 
+// Locator 是 workspace.Service 的可选扩展:把宿主路径映射到已配置的工作区。
+//
+// 只允许宿主/控制层使用(例如 ACP session/new 的 cwd);模型工具不得用它
+// 在会话内切换工作区。返回 found=false 表示路径不在任何工作区根下,
+// 调用方不得静默回退到当前工作区。
+type Locator interface {
+	Locate(ctx context.Context, hostPath string) (Info, bool, error)
+}
+
 // Service 是工作区契约。ResolveHost 同时完成授权与路径解析,调用方不得先打开再检查。
 type Service interface {
 	Current(ctx context.Context) (Info, error)

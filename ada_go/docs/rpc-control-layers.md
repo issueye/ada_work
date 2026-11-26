@@ -167,7 +167,7 @@ control.event           -> EventUpdate
 
 ```
 initialize          -> capabilities
-session/new         -> Client.Create
+session/new         -> Client.Create(cwd 经 workspace.Locator 映射为工作区 ID)
 session/load        -> Client.Load + Client.History,回放 session/update 后返回 null
 session/prompt      -> Client.Prompt
 session/cancel      -> Client.Cancel
@@ -182,6 +182,26 @@ session/update      <- control/update 事件
 
 `session/cancel` 取消当前轮后，`session/prompt` 返回 `stopReason: "cancelled"`
 （不是 JSON-RPC 错误）；其它失败才是错误。
+
+`initialize` 只协商 ACP 协议版本 1：客户端传其它非零版本返回 `-32602`，
+空版本（未声明）按 1 处理。
+
+端点关闭（连接断开或 `ada acp` 退出）时会回收本连接通过 `session/new` /
+`session/load` 登记的会话，调用控制层 `session.close`，避免长进程反复建立
+连接后残留会话。
+
+`session/update` 的顺序有保证：端点把所有更新放进同一条队列，`session/prompt`
+在返回前插入 flush 屏障，等本轮已入队的更新全部写出后才写响应。慢客户端或
+积压时更新会被丢弃（`Endpoint.Stats` 暴露 dropped/failed 计数）；单条消息超过
+`jsonrpc2` 行宽只会计入 failed，不再终止后续事件流。
+
+映射失败（畸形 `tool/call`、未知事件 kind、无法识别形状的 assistant 消息）
+一律跳过，不发明非法 `sessionUpdate`，也不把内部 JSON 当文本透给客户端。
+
+`session/new` 的 `cwd` 会经 `workspace.Locator`（可选扩展）映射到已配置工作区；
+有 workspace provider 但 cwd 不属于任何工作区根时拒绝创建，避免会话悄悄编辑
+另一个目录。没有 workspace 服务时保持 provider 默认根。`mcpServers` 非空时
+显式返回 `EUNIMPLEMENTED`，不做静默忽略。
 
 `session/prompt` 的内容块只接受 `text` 与 `resource_link`：后者渲染成
 `[file] 名称 <uri> (mime)`，由 agent 用工具读取；`image`/`audio`/
@@ -206,7 +226,10 @@ dispose, err := ep.BindApproval(ctx)   // 注册 approval.Approver("acp-client")
 
 `approval.Approver.Approve` 发 `session/request_permission`（服务端 → 客户端请求），
 把返回的 `outcome.selected` 映射成 allow/reject；取消、未知选项、连接错误都按拒绝处理
-（fail-closed），超时由 `approval.Ask` 的 30s 默认值兜底。
+（fail-closed），超时由 `approval.Ask` 的 30s 默认值兜底。审批请求的 `sessionId`
+优先取 `Request.Details`，缺失时回退到调用 ctx 里的 `session.FromContext`，
+因此 fs/shell/gate 不需要各自记得填 Details；`approval-gate` 会额外带上
+`toolCallId`，让客户端的权限弹窗能对应到具体工具调用。
 
 ACP 的文件/终端回调是另一组反向调用，由 [seam-acp.md](seam-acp.md) 承载：
 

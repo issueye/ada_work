@@ -21,6 +21,7 @@ import (
 	"github.com/issueye/ada_go_v2/plugins/seam/llm"
 	"github.com/issueye/ada_go_v2/plugins/seam/seamerr"
 	"github.com/issueye/ada_go_v2/plugins/seam/session"
+	"github.com/issueye/ada_go_v2/plugins/seam/workspace"
 )
 
 // PluginName 是插件 id。
@@ -36,9 +37,10 @@ type managed struct {
 
 // Service 是 Go 侧的控制层实现。
 type Service struct {
-	runner   seamagent.Runner
-	approval *approval.Registry
-	bus      *kernel.Context
+	runner    seamagent.Runner
+	approval  *approval.Registry
+	workspace *workspace.Chain
+	bus       *kernel.Context
 
 	mu       sync.Mutex
 	sessions map[string]*managed
@@ -81,7 +83,15 @@ func (s *Service) create(ctx context.Context, raw json.RawMessage) (json.RawMess
 	if s.runner == nil {
 		return nil, control.Unimplemented("没有 agent.runner")
 	}
-	sess, err := s.runner.Open(ctx, session.Meta{Title: req.Title})
+	meta := session.Meta{Title: req.Title}
+	if req.Cwd != "" {
+		id, err := s.bindWorkspace(ctx, req.Cwd)
+		if err != nil {
+			return nil, err
+		}
+		meta.Workspace = id
+	}
+	sess, err := s.runner.Open(ctx, meta)
 	if err != nil {
 		return nil, control.Unavailable("创建会话失败: " + err.Error())
 	}
@@ -111,6 +121,32 @@ func (s *Service) load(ctx context.Context, raw json.RawMessage) (json.RawMessag
 		}
 	}
 	return json.Marshal(s.info(req.SessionID, m))
+}
+
+// bindWorkspace 把 ACP 的 cwd 映射到已配置工作区。
+//
+// 没有 workspace 服务或 provider 时保持 provider 的默认根(旧 preset 不受影响);
+// 有 provider 但 cwd 不在任何工作区根下时拒绝创建,避免会话悄悄编辑另一个目录。
+func (s *Service) bindWorkspace(ctx context.Context, cwd string) (string, error) {
+	if s.workspace == nil || cwd == "" {
+		return "", nil
+	}
+	svc, err := s.workspace.Get()
+	if err != nil {
+		return "", nil
+	}
+	loc, ok := svc.(workspace.Locator)
+	if !ok {
+		return "", nil
+	}
+	info, found, err := loc.Locate(ctx, cwd)
+	if err != nil {
+		return "", control.Invalid("定位 cwd 工作区失败: " + err.Error())
+	}
+	if !found {
+		return "", control.Invalid("cwd 不属于任何已配置工作区: " + cwd)
+	}
+	return string(info.ID), nil
 }
 
 // resume 让 runner 按 id 恢复会话并登记;不实现 Resumer 或恢复失败都返回 nil。
@@ -458,9 +494,12 @@ func Plugin() kernel.Plugin {
 		}
 		svc := New(runner, approvalReg)
 		svc.bus = ctx
+		if v, ok := ctx.TryService(workspace.ServiceName); ok {
+			svc.workspace, _ = v.(*workspace.Chain)
+		}
 		_, err = ctx.Provide(control.ServiceName, svc, kernel.WithVersion(1), kernel.WithKind("object"))
 		return nil, err
-	}).WithInject("agent.runner").WithOptional("approval").WithProvide(control.ServiceName)
+	}).WithInject("agent.runner").WithOptional("approval", workspace.ServiceName).WithProvide(control.ServiceName)
 }
 
 // 编译期确认实现。

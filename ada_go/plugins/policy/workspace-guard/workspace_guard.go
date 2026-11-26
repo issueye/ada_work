@@ -64,6 +64,15 @@ func (g *guard) ResolveHost(ctx context.Context, op workspace.Op, p string) (wor
 	return target, nil
 }
 
+// Locate 把按宿主路径定位工作区的能力转发给内层;内层不支持时返回 found=false,
+// 而不是假装定位成功。装饰器不改变「根属于宿主」的边界。
+func (g *guard) Locate(ctx context.Context, hostPath string) (workspace.Info, bool, error) {
+	if l, ok := g.Service.(workspace.Locator); ok {
+		return l.Locate(ctx, hostPath)
+	}
+	return workspace.Info{}, false, nil
+}
+
 func (g *guard) patternsFor(op workspace.Op) []string {
 	switch op {
 	case workspace.OpWrite, workspace.OpEdit:

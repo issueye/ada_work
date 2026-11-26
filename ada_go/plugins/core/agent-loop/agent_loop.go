@@ -453,7 +453,9 @@ func (a *Agent) render(sess session.Session) []llm.Message {
 	boundary := a.compactedTo(sess)
 	var latestPlan *planseam.Plan
 	for _, ev := range evs {
-		if ev.Seq <= boundary && ev.Type != session.TypeCompactSummary {
+		// 计划是跨轮状态:即使被压缩边界覆盖,也要注入最新计划,
+		// 否则 compaction 之后模型会忘记当前计划。
+		if ev.Seq <= boundary && ev.Type != session.TypeCompactSummary && ev.Type != planseam.EventUpdated {
 			continue
 		}
 		switch ev.Type {

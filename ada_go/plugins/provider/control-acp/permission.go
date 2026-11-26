@@ -6,6 +6,7 @@ import (
 	"github.com/issueye/ada_go_v2/platform/kernel"
 	"github.com/issueye/ada_go_v2/plugins/seam/approval"
 	"github.com/issueye/ada_go_v2/plugins/seam/control"
+	"github.com/issueye/ada_go_v2/plugins/seam/session"
 )
 
 // ApproverName 是 ACP client 在 approval 注册表里的名字。
@@ -136,6 +137,13 @@ func (a *approver) Name() string { return ApproverName }
 // 只有 client 明确选择了 allow_* 选项才放行;取消、未知选项、连接错误一律拒绝。
 func (a *approver) Approve(ctx context.Context, req approval.Request) (approval.Decision, error) {
 	sessionID, _ := req.Details["sessionId"].(string)
+	// 工具审批发生在 agent-loop 的会话 ctx 内;approval.Request.Details 不是必填,
+	// 因此以 ctx 里的会话兜底,避免 fs/shell/gate 少传字段时 ACP 权限直接失败。
+	if sessionID == "" {
+		if sess, ok := session.FromContext(ctx); ok {
+			sessionID = sess.ID()
+		}
+	}
 	toolCallID, _ := req.Details["toolCallId"].(string)
 	options := DefaultPermissionOptions()
 	dec, err := a.ep.RequestPermission(ctx, control.PermissionRequest{

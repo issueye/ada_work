@@ -182,6 +182,47 @@ func (p *Provider) Switch(ctx context.Context, id workspace.ID) (workspace.Info,
 	return cloneInfo(e.info), nil
 }
 
+// Locate 把宿主路径映射到工作区根(workspace.Locator)。
+//
+// 只接受与工作区根相同的目录:允许子目录会让工具的相对路径基准与 cwd 不一致,
+// 因此不做「包含即匹配」的推断。
+func (p *Provider) Locate(_ context.Context, hostPath string) (workspace.Info, bool, error) {
+	if strings.TrimSpace(hostPath) == "" {
+		return workspace.Info{}, false, nil
+	}
+	abs, err := filepath.Abs(hostPath)
+	if err != nil {
+		return workspace.Info{}, false, workspace.Invalid("workspace-local: cwd 非法: " + err.Error())
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		// 路径不存在时无法定位;这是调用方的输入问题,不是工作区配置错误。
+		return workspace.Info{}, false, nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for _, id := range p.order {
+		e := p.items[id]
+		if sameDir(e.root, resolved) {
+			return cloneInfo(e.info), true, nil
+		}
+	}
+	return workspace.Info{}, false, nil
+}
+
+// sameDir 用 os.SameFile 比较目录,跨平台处理大小写/符号链接差异。
+func sameDir(a, b string) bool {
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(fa, fb)
+}
+
 // ResolveHost 选定工作区、校验虚拟路径与只读授权,再返回根内宿主路径。
 func (p *Provider) ResolveHost(ctx context.Context, op workspace.Op, virtual string) (workspace.Target, error) {
 	if !op.Valid() {

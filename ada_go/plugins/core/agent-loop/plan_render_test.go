@@ -2,12 +2,14 @@ package agentloop_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/issueye/ada_go_v2/platform/kernel"
 	agentloop "github.com/issueye/ada_go_v2/plugins/core/agent-loop"
+	sessionstats "github.com/issueye/ada_go_v2/plugins/core/session-stats"
 	memory "github.com/issueye/ada_go_v2/plugins/provider/session-memory"
 	"github.com/issueye/ada_go_v2/plugins/seam/llm"
 	planseam "github.com/issueye/ada_go_v2/plugins/seam/plan"
@@ -134,5 +136,84 @@ func TestPlanInjectedBeforeLastUserMessage(t *testing.T) {
 	}
 	if !strings.Contains(msgs[planIdx].Text(), "2. [~] 第二步") {
 		t.Fatalf("计划文本不符: %q", msgs[planIdx].Text())
+	}
+}
+
+// TestPlanSurvivesCompactionBoundary 覆盖计划事件早于压缩边界的情况:
+// 计划是跨轮状态,不能因为 compaction 而从 system prompt 消失。
+func TestPlanSurvivesCompactionBoundary(t *testing.T) {
+	ctx := context.Background()
+	app := kernel.New(kernel.Options{})
+	t.Cleanup(func() { _ = app.Stop(ctx) })
+	mount := func(p kernel.Plugin) {
+		t.Helper()
+		f, err := app.Plugin(p, kernel.NewConfig(nil))
+		if err != nil {
+			t.Fatalf("挂载 %s 失败: %v", p.Name(), err)
+		}
+		if err := f.Ready(ctx); err != nil {
+			t.Fatalf("%s 未就绪: %v", p.Name(), err)
+		}
+	}
+	mount(session.Plugin())
+	mount(memory.Plugin())
+	mount(sessionstats.Plugin())
+	mount(prompts.Plugin())
+	mount(llm.Plugin())
+	mount(tools.Plugin())
+	mount(agentloop.Plugin())
+
+	rawLLM, err := app.Root().Service("llm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &recordProvider{}
+	if _, err := rawLLM.(*llm.Registry).Register(provider); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := app.Root().Service("agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag := raw.(*agentloop.Agent)
+	sess, err := ag.Open(ctx, session.Meta{Title: "plan-compact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := planseam.Plan{
+		Title: "跨压缩",
+		Steps: []planseam.Step{{Content: "仍然记得", Status: planseam.StatusInProgress}},
+	}
+	if _, err := sess.Append(session.Event{
+		Type: planseam.EventUpdated, Data: planseam.Encode(plan), Source: "test", Ignorable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := json.Marshal(llm.Message{
+		Role: llm.RoleUser, Content: []llm.Block{{Kind: llm.BlockText, Text: "旧消息"}},
+	})
+	seqs, err := sess.Append(session.Event{Type: session.TypeUserMessage, Data: old, Source: "test"})
+	if err != nil || len(seqs) != 1 {
+		t.Fatalf("追加旧消息失败: %v", err)
+	}
+	summary, _ := json.Marshal(map[string]any{"upTo": seqs[0], "summary": "旧摘要"})
+	if err := sess.Compact(ctx, seqs[0], session.Event{
+		Type: session.TypeCompactSummary, Data: summary, Source: "test",
+	}); err != nil {
+		t.Fatalf("压缩失败: %v", err)
+	}
+
+	if _, err := ag.Run(ctx, sess, "继续"); err != nil {
+		t.Fatalf("run 失败: %v", err)
+	}
+	msgs := provider.messages()
+	found := false
+	for _, m := range msgs {
+		if m.Role == llm.RoleSystem && strings.Contains(m.Text(), "仍然记得") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("压缩边界之后仍应注入计划: %+v", msgs)
 	}
 }

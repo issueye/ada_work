@@ -32,13 +32,16 @@ func Serve(ctx context.Context, app *kernel.App, in io.Reader, out io.Writer) er
 	conn := jsonrpc2.New(ctx, &stdioRWC{in: in, out: out})
 	ep := controlacp.New(conn, seamcontrol.New(inv))
 	defer func() { _ = ep.Close() }()
-	ep.BindUpdates(app.Root())
+	disposeUpdates := ep.BindUpdates(app.Root())
+	defer func() { _ = disposeUpdates(ctx) }()
 
 	// 有 approval 服务时把权限交给 ACP client;没有就保持「未实现」,不静默放行。
 	if _, ok := app.Root().TryService("approval"); ok {
-		if _, err := ep.BindApproval(app.Root()); err != nil {
+		disposeApproval, err := ep.BindApproval(app.Root())
+		if err != nil {
 			return fmt.Errorf("注册 ACP 审批人失败: %w", err)
 		}
+		defer func() { _ = disposeApproval(ctx) }()
 	}
 	// 有 seam/acp 时把当前连接暴露成服务,供工具/插件按会话调用编辑器能力。
 	if raw, ok := app.Root().TryService(seamacp.ServiceName); ok {
@@ -50,7 +53,7 @@ func Serve(ctx context.Context, app *kernel.App, in io.Reader, out io.Writer) er
 		if err != nil {
 			return fmt.Errorf("绑定 ACP client 能力失败: %w", err)
 		}
-		defer func() { _ = dispose(context.Background()) }()
+		defer func() { _ = dispose(ctx) }()
 	}
 
 	<-conn.Done()

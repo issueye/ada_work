@@ -216,3 +216,25 @@ func TestPluginInstalls(t *testing.T) {
 		t.Fatalf("Info 不应暴露宿主根: %+v", info)
 	}
 }
+
+// 9. Locate 只接受工作区根本身,且路径不存在时不猜测。
+func TestLocateByRoot(t *testing.T) {
+	root := dir(t)
+	p, _ := newProvider(t, workspacelocal.Options{Workspaces: []workspacelocal.Workspace{
+		{ID: "repo", Root: root},
+	}})
+	info, found, err := p.Locate(context.Background(), root)
+	if err != nil || !found || info.ID != "repo" {
+		t.Fatalf("工作区根应能定位: %+v found=%v err=%v", info, found, err)
+	}
+	sub := filepath.Join(root, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := p.Locate(context.Background(), sub); err != nil || found {
+		t.Fatalf("子目录不应模糊匹配工作区: found=%v err=%v", found, err)
+	}
+	if _, found, err := p.Locate(context.Background(), filepath.Join(root, "missing")); err != nil || found {
+		t.Fatalf("不存在的路径不应定位: found=%v err=%v", found, err)
+	}
+}

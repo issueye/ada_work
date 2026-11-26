@@ -7,8 +7,9 @@
 //   - session/prompt
 //   - session/cancel
 //
-// 流式 session/update 可通过 SetUpdates 注入;权限请求通过 Approver/BindApproval
-// 接到 approval(见 permission.go);文件/终端回调仍待接。
+// 流式 session/update 通过 BindUpdates 订阅 control/update;权限请求通过
+// Approver/BindApproval 接到 approval(见 permission.go);client 反向
+// fs/terminal 能力见 acp_client.go。
 package controlacp
 
 import (
@@ -17,6 +18,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/issueye/ada_go_v2/platform/kernel"
 	"github.com/issueye/ada_go_v2/plugins/provider/jsonrpc2"
@@ -34,36 +36,88 @@ type Endpoint struct {
 	conn *jsonrpc2.Conn
 	ctl  *control.Client
 
-	mu      sync.Mutex
-	updates <-chan control.Update
-	stop    chan struct{}
+	mu        sync.Mutex
+	sourceSet bool
+	sessions  map[string]struct{}
+	closeOnce sync.Once
+	stop      chan struct{}
+
+	// queue 串行化 session/update 与 flush 屏障:所有更新都经过同一条队列,
+	// 因此屏障消息一定排在此前入队的更新之后。
+	queue chan queuedUpdate
+
+	dropped atomic.Uint64
+	failed  atomic.Uint64
 
 	capMu sync.RWMutex
 	caps  acpseam.Capabilities
 }
 
+// queuedUpdate 是转发队列的元素:flush 非 nil 时表示一个屏障请求。
+type queuedUpdate struct {
+	update control.Update
+	flush  chan struct{}
+}
+
 // New 在 conn 上注册 ACP 方法。
 func New(conn *jsonrpc2.Conn, ctl *control.Client) *Endpoint {
-	e := &Endpoint{conn: conn, ctl: ctl, stop: make(chan struct{})}
+	e := &Endpoint{
+		conn: conn, ctl: ctl, stop: make(chan struct{}),
+		queue:    make(chan queuedUpdate, 128),
+		sessions: make(map[string]struct{}),
+	}
 	conn.Handle("initialize", e.initialize)
 	conn.Handle("session/new", e.newSession)
 	conn.Handle("session/load", e.loadSession)
 	conn.Handle("session/prompt", e.prompt)
 	conn.Handle("session/cancel", e.cancel)
+	go e.forwardUpdates()
 	return e
 }
 
-// Close 关闭底层连接。
+// Close 关闭底层连接并回收本连接创建的会话;可重复调用。
 func (e *Endpoint) Close() error {
 	if e == nil || e.conn == nil {
 		return nil
 	}
-	select {
-	case <-e.stop:
-	default:
-		close(e.stop)
+	// 先关闭本端登记的控制层会话,避免长进程里端点反复建立后残留 map 条目。
+	// 使用连接 ctx(尚未 Close)以遵守「插件实现不使用 context.Background」。
+	if e.ctl != nil {
+		for _, id := range e.takeSessions() {
+			_ = e.ctl.Close(e.conn.Context(), id)
+		}
 	}
+	e.closeOnce.Do(func() { close(e.stop) })
 	return e.conn.Close()
+}
+
+// trackSession 记录本端点创建的会话,供 Close 回收。
+func (e *Endpoint) trackSession(id string) {
+	if id == "" {
+		return
+	}
+	e.mu.Lock()
+	e.sessions[id] = struct{}{}
+	e.mu.Unlock()
+}
+
+func (e *Endpoint) takeSessions() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]string, 0, len(e.sessions))
+	for id := range e.sessions {
+		out = append(out, id)
+	}
+	e.sessions = make(map[string]struct{})
+	return out
+}
+
+// Stats 返回被丢弃/转发失败的更新计数,用于诊断背压与单条超限。
+func (e *Endpoint) Stats() (dropped, failed uint64) {
+	if e == nil {
+		return 0, 0
+	}
+	return e.dropped.Load(), e.failed.Load()
 }
 
 type initializeParams struct {
@@ -85,6 +139,13 @@ func (e *Endpoint) initialize(_ context.Context, raw json.RawMessage) (any, erro
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams, Message: "initialize 参数非法"}
+		}
+	}
+	// 协议版本只支持 1;明确拒绝而不是假装协商成功,让客户端尽早失败。
+	if p.ProtocolVersion != 0 && p.ProtocolVersion != ProtocolVersion {
+		return nil, &jsonrpc2.Error{
+			Code:    jsonrpc2.CodeInvalidParams,
+			Message: fmt.Sprintf("不支持的 ACP 协议版本 %d(仅支持 %d)", p.ProtocolVersion, ProtocolVersion),
 		}
 	}
 	e.setCapabilities(p.ClientCapabilities)
@@ -111,23 +172,41 @@ func (e *Endpoint) newSession(ctx context.Context, raw json.RawMessage) (any, er
 			return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams, Message: "session/new 参数非法"}
 		}
 	}
-	info, err := e.ctl.Create(ctx, control.CreateRequest{Title: "ACP", Meta: map[string]any{"cwd": p.Cwd}})
+	if err := rejectMCPServers(p.MCPServers); err != nil {
+		return nil, rpcError(err)
+	}
+	info, err := e.ctl.Create(ctx, control.CreateRequest{Title: "ACP", Cwd: p.Cwd})
 	if err != nil {
 		return nil, rpcError(err)
 	}
+	e.trackSession(info.ID)
 	return map[string]any{"sessionId": info.ID}, nil
+}
+
+// rejectMCPServers 在未实现 MCP 时显式拒绝,而不是静默忽略客户端配置。
+func rejectMCPServers(servers []any) error {
+	if len(servers) == 0 {
+		return nil
+	}
+	return control.Unimplemented("session 暂不支持 mcpServers,请先在 preset 中配置工具")
 }
 
 func (e *Endpoint) loadSession(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p struct {
-		SessionID string `json:"sessionId"`
+		SessionID  string `json:"sessionId"`
+		Cwd        string `json:"cwd,omitempty"`
+		MCPServers []any  `json:"mcpServers,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &p); err != nil || p.SessionID == "" {
 		return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams, Message: "session/load 需要 sessionId"}
 	}
+	if err := rejectMCPServers(p.MCPServers); err != nil {
+		return nil, rpcError(err)
+	}
 	if _, err := e.ctl.Load(ctx, p.SessionID); err != nil {
 		return nil, rpcError(err)
 	}
+	e.trackSession(p.SessionID)
 	// 先回放历史,再返回 null(ACP session/load 的结果就是 null)。
 	history, err := e.ctl.History(ctx, p.SessionID)
 	if err != nil && !seamerr.Is(err, seamerr.ErrUnimplemented) {
@@ -214,6 +293,9 @@ func (e *Endpoint) prompt(ctx context.Context, raw json.RawMessage) (any, error)
 		return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams, Message: "session/prompt 需要 text"}
 	}
 	res, err := e.ctl.Prompt(ctx, control.PromptRequest{SessionID: p.SessionID, Text: text})
+	// prompt 返回前先把本轮已入队的 session/update 写完,避免响应先于
+	// 最后一批增量/工具更新到达客户端。失败路径同样要 flush(例如工具错误)。
+	e.flushUpdates(ctx)
 	if err != nil {
 		return nil, rpcError(err)
 	}
@@ -239,55 +321,123 @@ func (e *Endpoint) cancel(ctx context.Context, raw json.RawMessage) (any, error)
 //
 // 宿主应把 core/agent-control 发出的 control/update 事件转发到这个 channel。
 func (e *Endpoint) SetUpdates(ch <-chan control.Update) {
-	e.mu.Lock()
-	if e.updates != nil {
-		e.mu.Unlock()
+	if e == nil || ch == nil || !e.claimSource() {
 		return
 	}
-	e.updates = ch
-	e.mu.Unlock()
-	go e.forwardUpdates(ch)
+	// 外部 channel 只负责生产;入队仍走 e.queue,保证与 flush 屏障同一顺序。
+	go func() {
+		for {
+			select {
+			case <-e.stop:
+				return
+			case u, ok := <-ch:
+				if !ok {
+					return
+				}
+				e.enqueue(u)
+			}
+		}
+	}()
 }
 
 // BindUpdates 订阅 kernel 的 control/update 事件并转发成 ACP session/update。
 // Go 与 TS 控制实现都通过同一个事件名,因此 ACP 不关心控制层是哪种语言实现。
 func (e *Endpoint) BindUpdates(ctx *kernel.Context) kernel.Dispose {
-	ch := make(chan control.Update, 128)
+	if e == nil || ctx == nil || !e.claimSource() {
+		return func(context.Context) error { return nil }
+	}
 	dispose := ctx.On(control.EventUpdate, func(_ context.Context, _ *kernel.Context, args []any) (any, error) {
 		if len(args) > 0 {
 			if u, ok := args[0].(control.Update); ok {
-				select {
-				case ch <- u:
-				default:
-				}
+				e.enqueue(u)
 			}
 		}
 		return nil, nil
 	})
-	e.SetUpdates(ch)
-	return func(c context.Context) error {
-		_ = dispose(c)
-		close(ch)
-		return nil
+	return func(c context.Context) error { return dispose(c) }
+}
+
+// claimSource 保证同一个端点只有一个更新来源;重复设置会被忽略。
+func (e *Endpoint) claimSource() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.sourceSet {
+		return false
+	}
+	e.sourceSet = true
+	return true
+}
+
+// enqueue 非阻塞入队:慢客户端/积压时丢更新并计数,不阻塞控制层。
+func (e *Endpoint) enqueue(u control.Update) {
+	select {
+	case e.queue <- queuedUpdate{update: u}:
+	default:
+		e.dropped.Add(1)
 	}
 }
 
-func (e *Endpoint) forwardUpdates(ch <-chan control.Update) {
+// flushUpdates 等待此前入队的更新全部写出,用于保证 prompt 响应顺序。
+func (e *Endpoint) flushUpdates(ctx context.Context) {
+	if e == nil {
+		return
+	}
+	done := make(chan struct{})
+	select {
+	case e.queue <- queuedUpdate{flush: done}:
+	case <-ctx.Done():
+		return
+	case <-e.stop:
+		return
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+	case <-e.stop:
+	}
+}
+
+func (e *Endpoint) forwardUpdates() {
+	ctx := e.conn.Context()
 	for {
 		select {
 		case <-e.stop:
+			e.drainFlushes()
 			return
-		case u, ok := <-ch:
-			if !ok {
-				return
+		case q := <-e.queue:
+			if q.flush != nil {
+				close(q.flush)
+				continue
 			}
-			params := sessionUpdateParams(u)
+			params := sessionUpdateParams(q.update)
 			if params == nil {
 				continue
 			}
-			if err := e.conn.Notify(context.Background(), "session/update", params); err != nil {
-				return
+			if err := e.conn.Notify(ctx, "session/update", params); err != nil {
+				// 单条失败(典型是超过 maxLine)不应终止整条事件流;
+				// 连接已关闭时才退出,其余错误继续处理后续更新。
+				e.failed.Add(1)
+				select {
+				case <-e.conn.Done():
+					e.drainFlushes()
+					return
+				default:
+				}
 			}
+		}
+	}
+}
+
+// drainFlushes 在转发器退出时释放仍在等待的屏障,避免 prompt 卡到超时。
+func (e *Endpoint) drainFlushes() {
+	for {
+		select {
+		case q := <-e.queue:
+			if q.flush != nil {
+				close(q.flush)
+			}
+		default:
+			return
 		}
 	}
 }
@@ -310,8 +460,8 @@ func sessionUpdateParams(u control.Update) map[string]any {
 		"assistant/reasoning", "assistant_reasoning":
 		text, recognized := messageText(u.Data)
 		if !recognized {
-			// 未知形状:原样透出,至少不丢内容。
-			text = string(u.Data)
+			// 形状不认识时不把内部 JSON 当文本透出;严格客户端会把它显示给用户。
+			return nil
 		}
 		if text == "" {
 			// 纯工具调用的 assistant 消息没有文本,不产生空 chunk。
@@ -323,17 +473,17 @@ func sessionUpdateParams(u control.Update) map[string]any {
 		}
 		update["content"] = map[string]any{"type": "text", "text": text}
 	case "tool/call", "tool_call":
-		if mapped := toolCallUpdate(u.Data); mapped != nil {
-			update = mapped
-		} else if len(u.Data) > 0 {
-			update["data"] = u.Data
+		mapped := toolCallUpdate(u.Data)
+		if mapped == nil {
+			return nil
 		}
+		update = mapped
 	case "tool/result", "tool_result":
-		if mapped := toolResultUpdate(u.Data); mapped != nil {
-			update = mapped
-		} else if len(u.Data) > 0 {
-			update["data"] = u.Data
+		mapped := toolResultUpdate(u.Data)
+		if mapped == nil {
+			return nil
 		}
+		update = mapped
 	case planseam.EventUpdated:
 		p, derr := planseam.Decode(u.Data)
 		if derr != nil || len(p.Steps) == 0 {
@@ -347,14 +497,9 @@ func sessionUpdateParams(u control.Update) map[string]any {
 		}
 		update = map[string]any{"sessionUpdate": "plan", "entries": entries}
 	default:
-		// 插件自有事件(plugin:<id>/...)没有 ACP 等价物,不向客户端发明非法
-		// sessionUpdate;plan 已在上面的显式分支里映射。
-		if strings.HasPrefix(u.Kind, "plugin:") {
-			return nil
-		}
-		if len(u.Data) > 0 {
-			update["data"] = u.Data
-		}
+		// 插件自有事件与未知事件没有 ACP 等价物;不向客户端发明非法
+		// sessionUpdate,也不透传原始 JSON。
+		return nil
 	}
 	return map[string]any{"sessionId": u.SessionID, "update": update}
 }

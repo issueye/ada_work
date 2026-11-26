@@ -1,29 +1,41 @@
 package controlacp_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/issueye/ada_go_v2/platform/kernel"
+	approvalgate "github.com/issueye/ada_go_v2/plugins/policy/approval-gate"
 	controlacp "github.com/issueye/ada_go_v2/plugins/provider/control-acp"
 	"github.com/issueye/ada_go_v2/plugins/provider/jsonrpc2"
+	memory "github.com/issueye/ada_go_v2/plugins/provider/session-memory"
 	"github.com/issueye/ada_go_v2/plugins/seam/approval"
 	"github.com/issueye/ada_go_v2/plugins/seam/control"
+	"github.com/issueye/ada_go_v2/plugins/seam/session"
+	"github.com/issueye/ada_go_v2/plugins/seam/tools"
 )
 
 type fakeControl struct {
-	created int
-	prompt  string
+	created  int
+	prompt   string
+	create   control.CreateRequest
+	closed   []string
+	onPrompt func()
 }
 
 func (f *fakeControl) Invoke(_ context.Context, method string, params json.RawMessage) (json.RawMessage, error) {
 	switch method {
 	case control.MethodSessionCreate:
 		f.created++
+		_ = json.Unmarshal(params, &f.create)
 		return json.RawMessage(`{"id":"s1","title":"ACP"}`), nil
 	case control.MethodSessionLoad:
 		return json.RawMessage(`{"id":"s1","title":"ACP"}`), nil
@@ -33,6 +45,9 @@ func (f *fakeControl) Invoke(_ context.Context, method string, params json.RawMe
 		var req control.PromptRequest
 		_ = json.Unmarshal(params, &req)
 		f.prompt = req.Text
+		if f.onPrompt != nil {
+			f.onPrompt()
+		}
 		return json.RawMessage(`{"id":"t1","stopReason":"end_turn"}`), nil
 	case control.MethodSessionHistory:
 		return json.RawMessage(`[
@@ -41,6 +56,13 @@ func (f *fakeControl) Invoke(_ context.Context, method string, params json.RawMe
 			{"sessionId":"s1","kind":"assistant/message","data":{"message":{"content":[{"kind":"text","text":"回答"}]}}}
 		]`), nil
 	case control.MethodSessionCancel:
+		return json.RawMessage(`{}`), nil
+	case control.MethodSessionClose:
+		var req struct {
+			SessionID string `json:"sessionId"`
+		}
+		_ = json.Unmarshal(params, &req)
+		f.closed = append(f.closed, req.SessionID)
 		return json.RawMessage(`{}`), nil
 	default:
 		return json.RawMessage(`{}`), nil
@@ -77,6 +99,9 @@ func TestACPInitializeAndPrompt(t *testing.T) {
 	}
 	if session["sessionId"] != "s1" {
 		t.Fatalf("sessionId 不符: %+v", session)
+	}
+	if fake.create.Cwd != "/workspace" {
+		t.Fatalf("session/new 应把 cwd 传给控制层,实际 %+v", fake.create)
 	}
 	var prompt map[string]string
 	if err := client.Call(ctx, "session/prompt", map[string]any{
@@ -398,5 +423,321 @@ func TestACPLoadReplaysHistory(t *testing.T) {
 	}
 	if len(notifications) != 0 {
 		t.Fatalf("控制面事件不应回放,多出 %d 条", len(notifications))
+	}
+}
+
+// TestACPApproverUsesContextSession 覆盖 approval.Request 没带 Details 的真实路径:
+// fs/shell/gate 由 ctx 里的会话兜底,ACP 仍能把 sessionId 发给 client。
+func TestACPApproverUsesContextSession(t *testing.T) {
+	client, ep, ctx := acpClient(t, &fakeControl{})
+	seen := make(chan string, 1)
+	client.Handle("session/request_permission", func(_ context.Context, params json.RawMessage) (any, error) {
+		var in struct {
+			SessionID string `json:"sessionId"`
+		}
+		if err := json.Unmarshal(params, &in); err != nil {
+			return nil, err
+		}
+		seen <- in.SessionID
+		return map[string]any{"outcome": map[string]any{
+			"outcome": "selected", "optionId": control.OptionAllowOnce,
+		}}, nil
+	})
+
+	app := kernel.New(kernel.Options{})
+	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	mount := func(p kernel.Plugin) {
+		t.Helper()
+		f, err := app.Plugin(p, kernel.NewConfig(nil))
+		if err != nil {
+			t.Fatalf("挂载 %s 失败: %v", p.Name(), err)
+		}
+		if err := f.Ready(ctx); err != nil {
+			t.Fatalf("%s 未就绪: %v", p.Name(), err)
+		}
+	}
+	mount(session.Plugin())
+	mount(memory.Plugin())
+	mount(approval.Plugin())
+
+	sessions, err := kernel.Service[*session.Registry](app.Root(), "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := sessions.Open(ctx, "", session.Meta{Title: "权限"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := kernel.Service[*approval.Registry](app.Root(), "approval")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispose, err := ep.BindApproval(app.Root())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dispose(context.Background()) })
+
+	dec, err := approval.Ask(session.WithSession(ctx, sess), reg, controlacp.ApproverName, approval.Request{
+		Source: "fs", Op: "fs.write", Target: "a.txt", Reason: "测试",
+	})
+	if err != nil || !dec.Allow {
+		t.Fatalf("应放行: %+v err=%v", dec, err)
+	}
+	select {
+	case got := <-seen:
+		if got != sess.ID() {
+			t.Fatalf("sessionId 应为 %q,实际 %q", sess.ID(), got)
+		}
+	case <-ctx.Done():
+		t.Fatal("client 没有收到权限请求")
+	}
+}
+
+// recordingConn 记录服务端写出的字节,用于断言更新与响应的顺序。
+type recordingConn struct {
+	net.Conn
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (r *recordingConn) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	_, _ = r.buf.Write(p)
+	r.mu.Unlock()
+	return r.Conn.Write(p)
+}
+
+func (r *recordingConn) lines() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	raw := strings.Split(r.buf.String(), "\n")
+	out := make([]string, 0, len(raw))
+	for _, line := range raw {
+		if strings.TrimSpace(line) != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func TestACPPromptResponseWaitsForUpdates(t *testing.T) {
+	a, b := net.Pipe()
+	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	client := jsonrpc2.New(ctx, a)
+	t.Cleanup(func() { _ = client.Close() })
+	rec := &recordingConn{Conn: b}
+	server := jsonrpc2.New(ctx, rec)
+	app := kernel.New(kernel.Options{})
+	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	fake := &fakeControl{}
+	fake.onPrompt = func() {
+		app.Root().EmitContext(ctx, control.EventUpdate, control.Update{
+			SessionID: "s1", Kind: "assistant/delta", Data: json.RawMessage(`{"text":"最后一段"}`),
+		})
+	}
+	ep := controlacp.New(server, control.New(fake))
+	t.Cleanup(func() { _ = ep.Close() })
+	dispose := ep.BindUpdates(app.Root())
+	t.Cleanup(func() { _ = dispose(context.Background()) })
+
+	var res map[string]string
+	if err := client.Call(ctx, "session/prompt", map[string]any{
+		"sessionId": "s1",
+		"prompt":    []map[string]string{{"type": "text", "text": "hi"}},
+	}, &res); err != nil {
+		t.Fatalf("session/prompt 失败: %v", err)
+	}
+
+	updateIdx, responseIdx := -1, -1
+	for i, line := range rec.lines() {
+		if strings.Contains(line, `"method":"session/update"`) {
+			updateIdx = i
+		}
+		if strings.Contains(line, `"id":"c-1"`) && strings.Contains(line, `"result"`) {
+			responseIdx = i
+		}
+	}
+	if updateIdx < 0 {
+		t.Fatalf("没有写出 session/update: %+v", rec.lines())
+	}
+	if responseIdx < 0 {
+		t.Fatalf("没有写出 prompt 响应: %+v", rec.lines())
+	}
+	if updateIdx > responseIdx {
+		t.Fatalf("session/update 应早于 prompt 响应: update=%d response=%d", updateIdx, responseIdx)
+	}
+}
+
+// TestACPUpdateFailureKeepsStream 覆盖单条更新超限:后续更新仍应到达。
+func TestACPUpdateFailureKeepsStream(t *testing.T) {
+	a, b := net.Pipe()
+	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	notifications := make(chan jsonrpc2.Message, 2)
+	client := jsonrpc2.New(ctx, a, jsonrpc2.WithNotificationHandler(func(m jsonrpc2.Message) {
+		notifications <- m
+	}))
+	t.Cleanup(func() { _ = client.Close() })
+	server := jsonrpc2.New(ctx, b, jsonrpc2.WithMaxLine(256))
+	ep := controlacp.New(server, control.New(&fakeControl{}))
+	t.Cleanup(func() { _ = ep.Close() })
+	updates := make(chan control.Update, 2)
+	ep.SetUpdates(updates)
+
+	updates <- control.Update{
+		SessionID: "s1", Kind: "assistant/delta",
+		Data: json.RawMessage(`{"text":"` + strings.Repeat("x", 1024) + `"}`),
+	}
+	updates <- control.Update{
+		SessionID: "s1", Kind: "assistant/delta", Data: json.RawMessage(`{"text":"ok"}`),
+	}
+	select {
+	case msg := <-notifications:
+		var p struct {
+			Update struct {
+				Content struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"update"`
+		}
+		if err := json.Unmarshal(msg.Params, &p); err != nil {
+			t.Fatalf("通知参数非法: %v", err)
+		}
+		if p.Update.Content.Text != "ok" {
+			t.Fatalf("应跳过超限更新并继续发后续更新,实际 %q", p.Update.Content.Text)
+		}
+	case <-ctx.Done():
+		t.Fatal("超限更新之后的事件流被终止")
+	}
+	if _, failed := ep.Stats(); failed == 0 {
+		t.Fatal("超限更新应计入失败计数")
+	}
+}
+
+func TestACPRejectsMCPServers(t *testing.T) {
+	client, _, ctx := acpClient(t, &fakeControl{})
+	var out map[string]any
+	err := client.Call(ctx, "session/new", map[string]any{
+		"cwd":        "/workspace",
+		"mcpServers": []map[string]any{{"name": "demo"}},
+	}, &out)
+	if err == nil {
+		t.Fatal("未实现 MCP 时应显式拒绝")
+	}
+	var rerr *jsonrpc2.Error
+	if !errors.As(err, &rerr) || !strings.Contains(rerr.Message, "mcpServers") {
+		t.Fatalf("错误应说明 mcpServers 不支持: %v", err)
+	}
+}
+
+func TestACPInitializeRejectsUnsupportedVersion(t *testing.T) {
+	client, _, ctx := acpClient(t, &fakeControl{})
+	var out map[string]any
+	err := client.Call(ctx, "initialize", map[string]any{"protocolVersion": 2}, &out)
+	if err == nil {
+		t.Fatal("不支持的协议版本应显式拒绝")
+	}
+	var rerr *jsonrpc2.Error
+	if !errors.As(err, &rerr) || rerr.Code != jsonrpc2.CodeInvalidParams {
+		t.Fatalf("应返回 InvalidParams: %v", err)
+	}
+}
+
+func TestACPCloseRecyclesSessions(t *testing.T) {
+	fake := &fakeControl{}
+	client, ep, ctx := acpClient(t, fake)
+	var session map[string]string
+	if err := client.Call(ctx, "session/new", map[string]any{"cwd": "/workspace"}, &session); err != nil {
+		t.Fatalf("session/new 失败: %v", err)
+	}
+	if err := ep.Close(); err != nil {
+		t.Fatalf("Close 失败: %v", err)
+	}
+	if len(fake.closed) != 1 || fake.closed[0] != session["sessionId"] {
+		t.Fatalf("端点关闭应回收会话,实际 %+v", fake.closed)
+	}
+}
+
+// TestACPPermissionThroughApprovalGate 覆盖真实链路:
+// tools/pre-execute(gate) → approval.Ask → ACP approver → session/request_permission。
+func TestACPPermissionThroughApprovalGate(t *testing.T) {
+	client, ep, ctx := acpClient(t, &fakeControl{})
+	seen := make(chan string, 1)
+	client.Handle("session/request_permission", func(_ context.Context, params json.RawMessage) (any, error) {
+		var in struct {
+			SessionID string `json:"sessionId"`
+		}
+		if err := json.Unmarshal(params, &in); err != nil {
+			return nil, err
+		}
+		seen <- in.SessionID
+		return map[string]any{"outcome": map[string]any{
+			"outcome": "selected", "optionId": control.OptionAllowOnce,
+		}}, nil
+	})
+
+	app := kernel.New(kernel.Options{})
+	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	mount := func(p kernel.Plugin, cfg kernel.Config) {
+		t.Helper()
+		f, err := app.Plugin(p, cfg)
+		if err != nil {
+			t.Fatalf("挂载 %s 失败: %v", p.Name(), err)
+		}
+		if err := f.Ready(ctx); err != nil {
+			t.Fatalf("%s 未就绪: %v", p.Name(), err)
+		}
+	}
+	mount(tools.Plugin(), kernel.NewConfig(nil))
+	mount(approval.Plugin(), kernel.NewConfig(nil))
+	mount(session.Plugin(), kernel.NewConfig(nil))
+	mount(memory.Plugin(), kernel.NewConfig(nil))
+	mount(approvalgate.Plugin(), kernel.NewConfig(map[string]any{"tools": []string{"danger"}}))
+
+	toolsReg, err := kernel.Service[*tools.Registry](app.Root(), "tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var called int32
+	if _, err := toolsReg.Register(tools.ToolDef{
+		Name: "danger",
+		Handler: func(context.Context, tools.CallInfo) (tools.Result, error) {
+			atomic.AddInt32(&called, 1)
+			return tools.Result{Status: tools.StatusOK}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dispose, err := ep.BindApproval(app.Root())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dispose(context.Background()) })
+
+	sessions, err := kernel.Service[*session.Registry](app.Root(), "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := sessions.Open(ctx, "", session.Meta{Title: "审批"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := toolsReg.Invoke(session.WithSession(ctx, sess), tools.CallInfo{
+		ID: "call-1", Name: "danger", SessionID: sess.ID(),
+	})
+	if err != nil || res.Status != tools.StatusOK || atomic.LoadInt32(&called) != 1 {
+		t.Fatalf("审批放行后应执行: %+v err=%v called=%d", res, err, called)
+	}
+	select {
+	case got := <-seen:
+		if got != sess.ID() {
+			t.Fatalf("sessionId 应为 %q,实际 %q", sess.ID(), got)
+		}
+	case <-ctx.Done():
+		t.Fatal("ACP client 没有收到权限请求")
 	}
 }

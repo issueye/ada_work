@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -78,6 +79,43 @@ func TestUnknownMethod(t *testing.T) {
 	var rerr *Error
 	if !errors.As(err, &rerr) || rerr.Code != CodeMethodNotFound {
 		t.Fatalf("未知方法应返回 -32601，实际 %v", err)
+	}
+}
+
+func TestNotificationWithObserverAndHandler(t *testing.T) {
+	// 观察器存在时,已注册的 Handler 仍必须收到通知(ACP session/cancel 是通知)。
+	observed := make(chan Message, 1)
+	a, b := pipePair(t, WithNotificationHandler(func(m Message) { observed <- m }))
+	handled := make(chan json.RawMessage, 1)
+	b.Handle("session/cancel", func(_ context.Context, params json.RawMessage) (any, error) {
+		handled <- params
+		return nil, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := a.Notify(ctx, "session/cancel", map[string]string{"sessionId": "s1"}); err != nil {
+		t.Fatalf("notify 失败: %v", err)
+	}
+	select {
+	case params := <-handled:
+		if !bytes.Contains(params, []byte("s1")) {
+			t.Fatalf("cancel 参数不符: %s", params)
+		}
+	case <-ctx.Done():
+		t.Fatal("handler 被观察器吞掉了")
+	}
+	select {
+	case <-observed:
+	case <-ctx.Done():
+		t.Fatal("观察器没有收到通知")
+	}
+}
+
+func TestReadMessageSkipsBlankLines(t *testing.T) {
+	br := bufio.NewReader(strings.NewReader("\r\n\n" + `{"jsonrpc":"2.0","method":"x"}` + "\n"))
+	msg, err := readMessage(br, 128)
+	if err != nil || msg.Method != "x" {
+		t.Fatalf("空行应被跳过: %+v %v", msg, err)
 	}
 }
 

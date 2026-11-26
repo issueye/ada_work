@@ -225,3 +225,19 @@ func TestPluginEventSkipped(t *testing.T) {
 		t.Fatalf("插件自有事件不应发给 ACP: %+v", params)
 	}
 }
+
+// TestMalformedUpdatesSkipped 保证映射失败时不会发明非法 sessionUpdate,
+// 也不会把内部 JSON 当文本透给客户端。
+func TestMalformedUpdatesSkipped(t *testing.T) {
+	cases := []control.Update{
+		{SessionID: "s1", Kind: "assistant/message", Data: json.RawMessage(`{"foo":1}`)},
+		{SessionID: "s1", Kind: "tool/call", Data: json.RawMessage(`{"name":"x"}`)},
+		{SessionID: "s1", Kind: "tool/result", Data: json.RawMessage(`{"call":{}}`)},
+		{SessionID: "s1", Kind: "mystery/event", Data: json.RawMessage(`{"x":1}`)},
+	}
+	for _, u := range cases {
+		if params := sessionUpdateParams(u); params != nil {
+			t.Fatalf("%s 映射失败时应跳过,实际 %+v", u.Kind, params)
+		}
+	}
+}

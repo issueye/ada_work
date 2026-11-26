@@ -94,6 +94,8 @@ type Option func(*options)
 func WithMaxLine(n int) Option { return func(o *options) { o.maxLine = n } }
 
 // WithNotificationHandler 设置入站通知观察器。
+//
+// 观察器只做观察:通知仍会照常分发给已注册的 Handler,不会被观察器吞掉。
 func WithNotificationHandler(fn func(Message)) Option {
 	return func(o *options) { o.notificationFn = fn }
 }
@@ -227,6 +229,12 @@ func (c *Conn) Close() error {
 // 供宿主等待一次会话结束。
 func (c *Conn) Done() <-chan struct{} { return c.done }
 
+// Context 返回连接作用域 ctx:连接关闭时取消。
+//
+// 适配器需要长时间存活的后台 goroutine(例如 ACP 更新转发)时复用它,
+// 而不是退化成 context.Background。
+func (c *Conn) Context() context.Context { return c.ctx }
+
 func (c *Conn) errOrClosed() error {
 	c.errMu.Lock()
 	defer c.errMu.Unlock()
@@ -288,7 +296,6 @@ func (c *Conn) readLoop() {
 		case msg.IsNotification():
 			if c.opt.notificationFn != nil {
 				c.opt.notificationFn(msg)
-				continue
 			}
 			go c.dispatch(msg, false)
 		default:
@@ -341,34 +348,37 @@ func (c *Conn) dispatch(msg Message, reply bool) {
 }
 
 func readMessage(br *bufio.Reader, max int) (Message, error) {
-	var line []byte
 	for {
-		part, err := br.ReadSlice('\n')
-		line = append(line, part...)
-		if max > 0 && len(line) > max {
-			return Message{}, fmt.Errorf("jsonrpc2: 消息超过上限 %d", max)
+		var line []byte
+		for {
+			part, err := br.ReadSlice('\n')
+			line = append(line, part...)
+			if max > 0 && len(line) > max {
+				return Message{}, fmt.Errorf("jsonrpc2: 消息超过上限 %d", max)
+			}
+			if err == nil {
+				break
+			}
+			if errors.Is(err, bufio.ErrBufferFull) {
+				continue
+			}
+			return Message{}, err
 		}
-		if err == nil {
-			break
+		// 去掉行尾 CR/LF。
+		for len(line) > 0 && (line[len(line)-1] == '\n' || line[len(line)-1] == '\r') {
+			line = line[:len(line)-1]
 		}
-		if errors.Is(err, bufio.ErrBufferFull) {
+		if len(line) == 0 {
+			// 容忍空行:部分客户端会发送多余的换行,不应因此断连。
 			continue
 		}
-		return Message{}, err
+		var msg Message
+		if err := json.Unmarshal(line, &msg); err != nil {
+			return Message{}, fmt.Errorf("jsonrpc2: 解析失败: %w", err)
+		}
+		if msg.JSONRPC != Version {
+			return Message{}, fmt.Errorf("jsonrpc2: 版本不是 2.0")
+		}
+		return msg, nil
 	}
-	// 去掉行尾 CR/LF。
-	for len(line) > 0 && (line[len(line)-1] == '\n' || line[len(line)-1] == '\r') {
-		line = line[:len(line)-1]
-	}
-	if len(line) == 0 {
-		return Message{}, fmt.Errorf("jsonrpc2: 空消息")
-	}
-	var msg Message
-	if err := json.Unmarshal(line, &msg); err != nil {
-		return Message{}, fmt.Errorf("jsonrpc2: 解析失败: %w", err)
-	}
-	if msg.JSONRPC != Version {
-		return Message{}, fmt.Errorf("jsonrpc2: 版本不是 2.0")
-	}
-	return msg, nil
 }

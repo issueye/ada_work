@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -12,10 +13,12 @@ import (
 	"github.com/issueye/ada_go_v2/platform/kernel"
 	controlgo "github.com/issueye/ada_go_v2/plugins/core/agent-control"
 	memory "github.com/issueye/ada_go_v2/plugins/provider/session-memory"
+	workspacelocal "github.com/issueye/ada_go_v2/plugins/provider/workspace-local"
 	seamagent "github.com/issueye/ada_go_v2/plugins/seam/agent"
 	"github.com/issueye/ada_go_v2/plugins/seam/approval"
 	"github.com/issueye/ada_go_v2/plugins/seam/control"
 	"github.com/issueye/ada_go_v2/plugins/seam/session"
+	"github.com/issueye/ada_go_v2/plugins/seam/workspace"
 )
 
 type fakeRunner struct {
@@ -528,5 +531,70 @@ func TestGoControlRejectsConcurrentPrompt(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("取消后第一个 prompt 没有返回")
+	}
+}
+
+// metaRunner 记录 Open 收到的 meta,用于验证 cwd → workspace 绑定。
+type metaRunner struct {
+	reg  *session.Registry
+	meta session.Meta
+}
+
+func (r *metaRunner) Open(ctx context.Context, meta session.Meta) (session.Session, error) {
+	r.meta = meta
+	return r.reg.Open(ctx, "", meta)
+}
+
+func (r *metaRunner) Run(context.Context, session.Session, string) (seamagent.Result, error) {
+	return seamagent.Result{TurnID: "t1"}, nil
+}
+
+func TestGoControlCreateBindsWorkspaceByCwd(t *testing.T) {
+	root := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	app := kernel.New(kernel.Options{})
+	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	mount := func(p kernel.Plugin, cfg kernel.Config) {
+		t.Helper()
+		if _, err := app.Plugin(p, cfg); err != nil {
+			t.Fatalf("挂载 %s 失败: %v", p.Name(), err)
+		}
+	}
+	mount(session.Plugin(), kernel.NewConfig(nil))
+	mount(memory.Plugin(), kernel.NewConfig(nil))
+	mount(approval.Plugin(), kernel.NewConfig(nil))
+	mount(workspace.Plugin(), kernel.NewConfig(nil))
+	mount(workspacelocal.Plugin(), kernel.NewConfig(map[string]any{
+		"active": "repo",
+		"workspaces": []any{
+			map[string]any{"id": "repo", "root": root},
+		},
+	}))
+	reg, err := kernel.Service[*session.Registry](app.Root(), "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &metaRunner{reg: reg}
+	mount(kernel.Func("fake-agent", func(ctx *kernel.Context, _ kernel.Config) (kernel.Dispose, error) {
+		_, err := ctx.Provide("agent.runner", runner, kernel.WithVersion(1), kernel.WithKind("object"))
+		return nil, err
+	}).WithProvide("agent.runner"), kernel.NewConfig(nil))
+	mount(controlgo.Plugin(), kernel.NewConfig(nil))
+
+	raw, err := app.Root().Service(control.ServiceName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := control.New(raw.(control.Invoker))
+	if _, err := c.Create(context.Background(), control.CreateRequest{Cwd: root}); err != nil {
+		t.Fatalf("cwd 应绑定到工作区: %v", err)
+	}
+	if runner.meta.Workspace != "repo" {
+		t.Fatalf("会话 meta.Workspace 应为 repo,实际 %+v", runner.meta)
+	}
+	if _, err := c.Create(context.Background(), control.CreateRequest{Cwd: filepath.Join(root, "other")}); err == nil {
+		t.Fatal("cwd 不属于任何工作区时应拒绝")
 	}
 }

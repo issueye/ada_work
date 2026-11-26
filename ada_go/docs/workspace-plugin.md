@@ -159,6 +159,12 @@ type Service interface {
     // Switch 只给宿主/用户调用，不暴露成模型工具；已有会话的绑定不变。
     Switch(ctx context.Context, id ID) (Info, error)
 }
+
+// Locator 是可选扩展：把宿主路径映射到已配置的工作区（例如 ACP 的 cwd）。
+// 只允许宿主/控制层使用；found=false 表示路径不属于任何工作区根。
+type Locator interface {
+    Locate(ctx context.Context, hostPath string) (Info, bool, error)
+}
 ```
 
 解析规则（provider 必须实现）：
@@ -171,6 +177,8 @@ type Service interface {
 6. 符号链接：解析最深已存在祖先，最终宿主路径必须仍在工作区根内；否则 `EDENIED`。
 7. `Target.Rel` 用 slash，根目录为 `"."`；`Target.Host` 必须是绝对路径且已去符号链接。
 8. `ResolveHost` 不得缓存跨调用的结果：`Switch` 后新调用必须看到新根。
+9. `Locate` 是可选扩展，只接受与工作区根相同的宿主目录；子目录不模糊匹配，
+   路径不存在时返回 `found=false`，调用方不得静默回退到 `Current`。
 
 ### 5.3 Chain
 

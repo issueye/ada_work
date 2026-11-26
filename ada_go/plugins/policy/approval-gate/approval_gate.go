@@ -53,6 +53,17 @@ func Handler(approval *seamapproval.Registry, backend string, require []string, 
 			ID: "tool:" + call.Name, Source: "tool", Op: "tool.invoke",
 			Target: call.Name, Reason: "工具需要审批: " + call.Name,
 		}
+		// 详情是审批人的关联键:ACP 需要 sessionId 才能发 session/request_permission,
+		// toolCallId 用于把权限弹窗对应到具体的工具调用。
+		if call.SessionID != "" || call.ID != "" {
+			req.Details = map[string]any{}
+			if call.SessionID != "" {
+				req.Details["sessionId"] = call.SessionID
+			}
+			if call.ID != "" {
+				req.Details["toolCallId"] = call.ID
+			}
+		}
 		if timeout > 0 {
 			req.Timeout = timeout
 		}
