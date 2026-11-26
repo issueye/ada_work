@@ -242,7 +242,7 @@ func (r *Registry) Lookup(n Network) (Transport, bool)
 | `tcp` | ✅ | ✅ | ✅ Winsock | `token` | 默认只监听 loopback;远程需 TLS(P4) |
 | `unix` | ✅ | ✅ | ✅ AF_UNIX(10.0.17063+) | `os` | Windows 只支持文件路径,无抽象命名空间;路径权限语义弱于 Linux |
 | `pipe` | ❌ | ❌ | ✅ 命名管道 | `os` | 仅 windows 构建注册;非 Windows 返回 `EUNIMPLEMENTED` |
-| `stdio` | ✅ | ✅ | ✅ | `none` | 单连接、由宿主拥有;ACP/CLI attach 使用 |
+| `stdio` | ✅ | ✅ | ✅ | 由宿主配置 | 单连接、由宿主拥有;由 `rpc-stdio` 提供,不注册 builtin |
 
 Windows 上首选 `pipe`(ACL + `PIPE_REJECT_REMOTE_CLIENTS`),`unix` 只用于与其它平台的测试/互操作。`tcp` 在 Windows 上即 Winsock;`pipe` 是命名管道;两者都保留。
 
