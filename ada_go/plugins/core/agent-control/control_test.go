@@ -2,7 +2,9 @@ package controlgo_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/issueye/ada_go_v2/platform/kernel"
 	controlgo "github.com/issueye/ada_go_v2/plugins/core/agent-control"
@@ -20,7 +22,8 @@ func (f fakeRunner) Open(ctx context.Context, meta session.Meta) (session.Sessio
 	return f.reg.Open(ctx, "", meta)
 }
 
-func (f fakeRunner) Run(_ context.Context, _ session.Session, text string) (seamagent.Result, error) {
+func (f fakeRunner) Run(_ context.Context, sess session.Session, text string) (seamagent.Result, error) {
+	_, _ = sess.Append(session.Event{Type: session.TypeAssistantMessage, Data: json.RawMessage(`{"text":"echo:` + text + `"}`)})
 	return seamagent.Result{TurnID: "t1", Text: "echo:" + text}, nil
 }
 
@@ -62,9 +65,30 @@ func TestGoControlPlugin(t *testing.T) {
 	if err != nil || info.ID == "" || info.Title != "demo" {
 		t.Fatalf("Go control create 不符: %+v err=%v", info, err)
 	}
+	updates := make(chan control.Update, 1)
+	dispose := app.Root().On(control.EventUpdate, func(_ context.Context, _ *kernel.Context, args []any) (any, error) {
+		if len(args) > 0 {
+			if u, ok := args[0].(control.Update); ok {
+				select {
+				case updates <- u:
+				default:
+				}
+			}
+		}
+		return nil, nil
+	})
+	defer func() { _ = dispose(context.Background()) }()
 	turn, err := c.Prompt(context.Background(), control.PromptRequest{SessionID: info.ID, Text: "hi"})
 	if err != nil || turn.ID != "t1" || turn.Text != "echo:hi" {
 		t.Fatalf("Go control prompt 不符: %+v err=%v", turn, err)
+	}
+	select {
+	case u := <-updates:
+		if u.SessionID != info.ID || u.Kind != session.TypeAssistantMessage {
+			t.Fatalf("control/update 不符: %+v", u)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("没有收到 control/update")
 	}
 	list, err := c.List(context.Background())
 	if err != nil || len(list) != 1 || list[0].ID != info.ID {

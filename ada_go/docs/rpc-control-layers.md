@@ -91,7 +91,9 @@ ACP 协议适配器把它映射成 `session/update`，RPC 适配器映射成事�
 | 包 | 层 | 状态 |
 |---|---|---|
 | `plugins/seam/control` | 2 | ✅ 契约、`Client`、`Invoker`、Go/TS 契约测试 |
-| `platform/bridge`（control 包装） | 2 适配 | ✅ TS `ctx.provide("control")` 自动包装 |\n| `core/agent-control` | 2 实现 | ✅ `agent.runner` → `control.Invoker`；create/load/list/prompt/cancel/permission/close |\n| `seam/agent` | 能力契约 | ✅ `Runner`（Open/Run） |
+| `platform/bridge`（control 包装） | 2 适配 | ✅ TS `ctx.provide("control")` 自动包装 |
+| `core/agent-control` | 2 实现 | ✅ `agent.runner` → `control.Invoker`；create/load/list/prompt/cancel/permission/close |
+| `seam/agent` | 能力契约 | ✅ `Runner`（Open/Run） |
 | `provider/rpc-json` | 3+4 | ◐ 现有 v1 协议；尚未拆成 control 适配 + frame 通道 |
 | `provider/control-rpc-v1` | 3 | ⏳ 待建：v1 方法 → `control.Client` |
 | `provider/jsonrpc2` | 4 | ⏳ 待建：JSON-RPC 2.0 消息通道 |
@@ -114,8 +116,9 @@ ACP 协议适配器把它映射成 `session/update`，RPC 适配器映射成事�
 ## 5. Go 实现边界
 
 `core/agent-control` 目前是同步实现：`session.prompt` 阻塞到一轮结束并返回最终结果；
-`control/update` 流式事件尚未由该实现产生。ACP 的流式 `session/update` 需要先补
-“从 session 订阅投影到 control/update”的适配。
+它会在 `Run` 返回后把本轮新增的 session 事件投影成 `control/update`，
+形状已通，但不是逐 token 实时。ACP 的流式 `session/update` 可先消费这些事件，
+后续再改成边跑边发。
 
 ## 6. 协议适配方向
 

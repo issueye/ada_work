@@ -35,6 +35,7 @@ type managed struct {
 type Service struct {
 	runner   seamagent.Runner
 	approval *approval.Registry
+	bus      *kernel.Context
 
 	mu       sync.Mutex
 	sessions map[string]*managed
@@ -142,8 +143,39 @@ func (s *Service) prompt(ctx context.Context, raw json.RawMessage) (json.RawMess
 	m.cancel = cancel
 	m.updatedAt = time.Now()
 	s.mu.Unlock()
+
+	// 把本轮新增的 session 事件投影成 control/update;订阅从最后一条之后开始,
+	// 不重放历史。Run 返回时 Append 已结束,剩余队列可以直接排空。
+	var updates <-chan session.Event
+	var dispose kernel.Dispose
+	if s.bus != nil && m.sess != nil {
+		from := uint64(1)
+		if events, eerr := m.sess.Events(0, 0); eerr == nil && len(events) > 0 {
+			from = events[len(events)-1].Seq + 1
+		}
+		updates, dispose = m.sess.Subscribe(from)
+	}
 	res, err := s.runner.Run(runCtx, m.sess, req.Text)
 	cancel()
+	if dispose != nil {
+		_ = dispose(context.Background())
+	}
+	if updates != nil {
+		for {
+			select {
+			case ev, ok := <-updates:
+				if !ok {
+					goto drained
+				}
+				s.bus.EmitContext(ctx, control.EventUpdate, control.Update{
+					SessionID: req.SessionID, TurnID: ev.TurnID, Kind: ev.Type, Data: ev.Data,
+				})
+			default:
+				goto drained
+			}
+		}
+	drained:
+	}
 	s.mu.Lock()
 	if m.seq == seq {
 		m.cancel = nil
@@ -239,6 +271,7 @@ func Plugin() kernel.Plugin {
 			approvalReg, _ = v.(*approval.Registry)
 		}
 		svc := New(runner, approvalReg)
+		svc.bus = ctx
 		_, err = ctx.Provide(control.ServiceName, svc, kernel.WithVersion(1), kernel.WithKind("object"))
 		return nil, err
 	}).WithInject("agent.runner").WithOptional("approval").WithProvide(control.ServiceName)
