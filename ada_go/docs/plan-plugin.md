@@ -70,7 +70,21 @@ system 消息插到「最后一条 user 消息之前」：
 - `plan` 已注册为 builtin；
 - preset 里显式启用（例如 `examples/acp/plugins/plan`）；
 - 与 ACP 一起用时，`ada acp` 不需要额外配置：计划事件经 control 层进入
-  `session/update`。
+  `session/update`；
+- TS 插件可 `import { get, set, update } from "ada:plan"` 读写当前会话计划，
+  但必须在有会话上下文的工具调用里使用（见 §8）：
+
+```ts
+import { get, set, update } from "ada:plan"
+
+export function apply(ctx: any) {
+  ctx.tool({ name: "plan_demo", input: { type: "object" } }, () => {
+    set({ title: "TS", steps: [{ content: "第一步" }, { content: "第二步" }] })
+    update(1, "completed")
+    return JSON.stringify(get())
+  })
+}
+```
 
 ## 6. 会话上下文
 
@@ -104,4 +118,5 @@ go test ./platform/host/cli -run TestACPServe
 - 只保留最新计划；历史计划事件仍在 session 里，但不会全部注入请求。
 - 没有自动推断步骤完成（例如工具成功 ≠ 步骤完成），状态由模型显式更新。
 - 计划是会话级，不跨会话共享；需要跨会话的任务请用外部存储（如 `task-helper`）。
-- TS 插件暂时无法直接读写计划：没有 `ada:session` / session ctx，需要先补 bridge。
+- TS 通过 `ada:plan` 读写计划，通过 `ada:session.current()` 拿会话身份，
+  通过 `history` / `recent` 只读有界地读取事件（见 [bridge-session-store.md](bridge-session-store.md)）。

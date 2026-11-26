@@ -137,6 +137,25 @@ type Host struct {
 	FSEdit   func(ctx context.Context, path, old, new string, all bool) (int, error)
 	FSSearch func(ctx context.Context, path, query string, limit int) (string, error)
 	FSList   func(ctx context.Context, path string, recursive bool, limit int) (string, error)
+	// PlanGet/PlanSet/PlanUpdate 是注入模块 ada:plan 的宿主实现。
+	// 计划属于会话:实现从调用 ctx 取会话,没有会话时返回错误。
+	PlanGet    func(ctx context.Context) (string, error)
+	PlanSet    func(ctx context.Context, planJSON string) (string, error)
+	PlanUpdate func(ctx context.Context, index int, status string) (string, error)
+	// SessionCurrent/SessionAppend 是注入模块 ada:session 的宿主实现。
+	// Current 返回会话 JSON 或 "null";Append 只能写插件自有事件(kind 由宿主加前缀)。
+	SessionCurrent func(ctx context.Context) (string, error)
+	SessionAppend  func(ctx context.Context, kind, dataJSON string) (uint64, error)
+	// SessionHistory/SessionRecent 是 ada:session 的只读事件接口:
+	// 返回事件数组 JSON;读取范围与大小上限由宿主决定。
+	SessionHistory func(ctx context.Context, from uint64, limit int) (string, error)
+	SessionRecent  func(ctx context.Context, limit int) (string, error)
+	// StoreGet/StoreSet/StoreDelete/StoreList 是 ctx.store / ada:store 的宿主实现。
+	// 值是 JSON 字符串;Get 在键不存在时返回 "null"。
+	StoreGet    func(ctx context.Context, key string) (string, error)
+	StoreSet    func(ctx context.Context, key, valueJSON string) error
+	StoreDelete func(ctx context.Context, key string) error
+	StoreList   func(ctx context.Context, prefix string) (string, error)
 	// HTTPDo 执行一次 HTTP(S) 请求;spec 与返回值都是 JSON 字符串。
 	// 是否受网络策略约束由宿主决定,jsrt 只负责转发。
 	HTTPDo func(ctx context.Context, spec string) (string, error)
@@ -569,6 +588,35 @@ func (r *Runtime) load(ctx context.Context) error {
 	if err := setFn("tool", r.nativeTool(raw)); err != nil {
 		return fmt.Errorf("jsrt: 注入 ctx.tool 失败: %w", err)
 	}
+	if r.opts.Host.StoreGet != nil || r.opts.Host.StoreSet != nil || r.opts.Host.StoreDelete != nil || r.opts.Host.StoreList != nil {
+		storeObj := realm.NewObject()
+		setStoreFn := func(name string, length int, fn moejs.NativeFunc) error {
+			return storeObj.SetProp(realm, realm.KeyFromGoString(name), raw.Function(name, length, fn))
+		}
+		if r.opts.Host.StoreGet != nil {
+			if err := setStoreFn("get", 1, r.nativeStoreGet(raw)); err != nil {
+				return fmt.Errorf("jsrt: 注入 ctx.store.get 失败: %w", err)
+			}
+		}
+		if r.opts.Host.StoreSet != nil {
+			if err := setStoreFn("set", 2, r.nativeStoreSet(raw)); err != nil {
+				return fmt.Errorf("jsrt: 注入 ctx.store.set 失败: %w", err)
+			}
+		}
+		if r.opts.Host.StoreDelete != nil {
+			if err := setStoreFn("delete", 1, r.nativeStoreDelete(raw)); err != nil {
+				return fmt.Errorf("jsrt: 注入 ctx.store.delete 失败: %w", err)
+			}
+		}
+		if r.opts.Host.StoreList != nil {
+			if err := setStoreFn("list", 1, r.nativeStoreList(raw)); err != nil {
+				return fmt.Errorf("jsrt: 注入 ctx.store.list 失败: %w", err)
+			}
+		}
+		if err := ctxObj.SetProp(realm, realm.KeyFromGoString("store"), engine.ObjectValue(storeObj)); err != nil {
+			return fmt.Errorf("jsrt: 注入 ctx.store 失败: %w", err)
+		}
+	}
 	for name, val := range r.opts.Globals {
 		if err := raw.SetGlobal(name, val); err != nil {
 			return fmt.Errorf("jsrt: 注入全局 %s 失败: %w", name, err)
@@ -616,6 +664,79 @@ func (r *Runtime) load(ctx context.Context) error {
 		}
 		if err := hostObj.SetProp(realm, realm.KeyFromGoString("fs"), engine.ObjectValue(fsObj)); err != nil {
 			return fmt.Errorf("jsrt: 注入 __adaHost.fs 失败: %w", err)
+		}
+	}
+	if r.opts.Host.PlanGet != nil || r.opts.Host.PlanSet != nil || r.opts.Host.PlanUpdate != nil {
+		planObj := realm.NewObject()
+		if r.opts.Host.PlanGet != nil {
+			if err := planObj.SetProp(realm, realm.KeyFromGoString("get"), raw.Function("get", 0, r.nativePlanGet(raw))); err != nil {
+				return fmt.Errorf("jsrt: 注入 __adaHost.plan.get 失败: %w", err)
+			}
+		}
+		if r.opts.Host.PlanSet != nil {
+			if err := planObj.SetProp(realm, realm.KeyFromGoString("set"), raw.Function("set", 1, r.nativePlanSet(raw))); err != nil {
+				return fmt.Errorf("jsrt: 注入 __adaHost.plan.set 失败: %w", err)
+			}
+		}
+		if r.opts.Host.PlanUpdate != nil {
+			if err := planObj.SetProp(realm, realm.KeyFromGoString("update"), raw.Function("update", 2, r.nativePlanUpdate(raw))); err != nil {
+				return fmt.Errorf("jsrt: 注入 __adaHost.plan.update 失败: %w", err)
+			}
+		}
+		if err := hostObj.SetProp(realm, realm.KeyFromGoString("plan"), engine.ObjectValue(planObj)); err != nil {
+			return fmt.Errorf("jsrt: 注入 __adaHost.plan 失败: %w", err)
+		}
+	}
+	if r.opts.Host.SessionCurrent != nil || r.opts.Host.SessionAppend != nil {
+		sessionObj := realm.NewObject()
+		if r.opts.Host.SessionCurrent != nil {
+			if err := sessionObj.SetProp(realm, realm.KeyFromGoString("current"), raw.Function("current", 0, r.nativeSessionCurrent(raw))); err != nil {
+				return fmt.Errorf("jsrt: 注入 __adaHost.session.current 失败: %w", err)
+			}
+		}
+		if r.opts.Host.SessionAppend != nil {
+			if err := sessionObj.SetProp(realm, realm.KeyFromGoString("append"), raw.Function("append", 2, r.nativeSessionAppend(raw))); err != nil {
+				return fmt.Errorf("jsrt: 注入 __adaHost.session.append 失败: %w", err)
+			}
+		}
+		if r.opts.Host.SessionHistory != nil {
+			if err := sessionObj.SetProp(realm, realm.KeyFromGoString("history"), raw.Function("history", 2, r.nativeSessionHistory(raw))); err != nil {
+				return fmt.Errorf("jsrt: 注入 __adaHost.session.history 失败: %w", err)
+			}
+		}
+		if r.opts.Host.SessionRecent != nil {
+			if err := sessionObj.SetProp(realm, realm.KeyFromGoString("recent"), raw.Function("recent", 1, r.nativeSessionRecent(raw))); err != nil {
+				return fmt.Errorf("jsrt: 注入 __adaHost.session.recent 失败: %w", err)
+			}
+		}
+		if err := hostObj.SetProp(realm, realm.KeyFromGoString("session"), engine.ObjectValue(sessionObj)); err != nil {
+			return fmt.Errorf("jsrt: 注入 __adaHost.session 失败: %w", err)
+		}
+	}
+	if r.opts.Host.StoreGet != nil || r.opts.Host.StoreSet != nil || r.opts.Host.StoreDelete != nil || r.opts.Host.StoreList != nil {
+		storeObj := realm.NewObject()
+		if r.opts.Host.StoreGet != nil {
+			if err := storeObj.SetProp(realm, realm.KeyFromGoString("get"), raw.Function("get", 1, r.nativeStoreGet(raw))); err != nil {
+				return fmt.Errorf("jsrt: 注入 __adaHost.store.get 失败: %w", err)
+			}
+		}
+		if r.opts.Host.StoreSet != nil {
+			if err := storeObj.SetProp(realm, realm.KeyFromGoString("set"), raw.Function("set", 2, r.nativeStoreSet(raw))); err != nil {
+				return fmt.Errorf("jsrt: 注入 __adaHost.store.set 失败: %w", err)
+			}
+		}
+		if r.opts.Host.StoreDelete != nil {
+			if err := storeObj.SetProp(realm, realm.KeyFromGoString("delete"), raw.Function("delete", 1, r.nativeStoreDelete(raw))); err != nil {
+				return fmt.Errorf("jsrt: 注入 __adaHost.store.delete 失败: %w", err)
+			}
+		}
+		if r.opts.Host.StoreList != nil {
+			if err := storeObj.SetProp(realm, realm.KeyFromGoString("list"), raw.Function("list", 1, r.nativeStoreList(raw))); err != nil {
+				return fmt.Errorf("jsrt: 注入 __adaHost.store.list 失败: %w", err)
+			}
+		}
+		if err := hostObj.SetProp(realm, realm.KeyFromGoString("store"), engine.ObjectValue(storeObj)); err != nil {
+			return fmt.Errorf("jsrt: 注入 __adaHost.store 失败: %w", err)
 		}
 	}
 	// 网络能力不做策略限制,但仍然是宿主注入:
@@ -1491,6 +1612,270 @@ func toInt64(v any) (int64, bool) {
 }
 
 // nativeTool 实现 ctx.tool(spec, handler):handler 是 JS 函数,工具调用时回调。
+// nativePlanGet 实现 __adaHost.plan.get():返回计划 JSON,"null" 表示没有计划。
+func (r *Runtime) nativePlanGet(raw *moejs.Runtime) moejs.NativeFunc {
+	return func(_ *engine.Realm, _ engine.Value, _ []engine.Value) (engine.Value, error) {
+		if r.opts.Host.PlanGet == nil {
+			return engine.Undefined(), fmt.Errorf("plan.get 未启用")
+		}
+		out, err := r.opts.Host.PlanGet(r.currentContext())
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return raw.FromGo(out)
+	}
+}
+
+// nativePlanSet 实现 __adaHost.plan.set(planJSON)。
+func (r *Runtime) nativePlanSet(raw *moejs.Runtime) moejs.NativeFunc {
+	return func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+		if r.opts.Host.PlanSet == nil {
+			return engine.Undefined(), fmt.Errorf("plan.set 未启用")
+		}
+		if len(args) < 1 {
+			return engine.Undefined(), fmt.Errorf("plan.set(planJSON) 需要参数")
+		}
+		body, err := toString(raw, args[0])
+		if err != nil || body == "" {
+			return engine.Undefined(), fmt.Errorf("plan.set 参数必须是非空 JSON 字符串")
+		}
+		out, err := r.opts.Host.PlanSet(r.currentContext(), body)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return raw.FromGo(out)
+	}
+}
+
+// nativePlanUpdate 实现 __adaHost.plan.update(index, status)。
+func (r *Runtime) nativePlanUpdate(raw *moejs.Runtime) moejs.NativeFunc {
+	return func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+		if r.opts.Host.PlanUpdate == nil {
+			return engine.Undefined(), fmt.Errorf("plan.update 未启用")
+		}
+		if len(args) < 2 {
+			return engine.Undefined(), fmt.Errorf("plan.update(index, status) 需要两个参数")
+		}
+		got, err := raw.ToGo(args[0])
+		if err != nil {
+			return engine.Undefined(), fmt.Errorf("plan.update 的 index 无法转换: %w", err)
+		}
+		index, ok := toInt64(got)
+		if !ok || index < 1 {
+			return engine.Undefined(), fmt.Errorf("plan.update 的 index 必须是从 1 开始的整数")
+		}
+		status, err := toString(raw, args[1])
+		if err != nil || status == "" {
+			return engine.Undefined(), fmt.Errorf("plan.update 的 status 必须是非空字符串")
+		}
+		out, err := r.opts.Host.PlanUpdate(r.currentContext(), int(index), status)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return raw.FromGo(out)
+	}
+}
+
+// nativeSessionCurrent 实现 __adaHost.session.current():返回会话 JSON 或 "null"。
+func (r *Runtime) nativeSessionCurrent(raw *moejs.Runtime) moejs.NativeFunc {
+	return func(_ *engine.Realm, _ engine.Value, _ []engine.Value) (engine.Value, error) {
+		if r.opts.Host.SessionCurrent == nil {
+			return engine.Undefined(), fmt.Errorf("session.current 未启用")
+		}
+		out, err := r.opts.Host.SessionCurrent(r.currentContext())
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return raw.FromGo(out)
+	}
+}
+
+// nativeSessionAppend 实现 __adaHost.session.append(kind, dataJSON)。
+func (r *Runtime) nativeSessionAppend(raw *moejs.Runtime) moejs.NativeFunc {
+	return func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+		if r.opts.Host.SessionAppend == nil {
+			return engine.Undefined(), fmt.Errorf("session.append 未启用")
+		}
+		if len(args) < 2 {
+			return engine.Undefined(), fmt.Errorf("session.append(kind, data) 需要两个参数")
+		}
+		kind, err := toString(raw, args[0])
+		if err != nil || kind == "" {
+			return engine.Undefined(), fmt.Errorf("session.append 的 kind 必须是非空字符串")
+		}
+		data, err := toString(raw, args[1])
+		if err != nil {
+			return engine.Undefined(), fmt.Errorf("session.append 的 data 必须是 JSON 字符串")
+		}
+		seq, err := r.opts.Host.SessionAppend(r.currentContext(), kind, data)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return raw.FromGo(int64(seq))
+	}
+}
+
+// nativeSessionHistory 实现 __adaHost.session.history(from, limit)。
+func (r *Runtime) nativeSessionHistory(raw *moejs.Runtime) moejs.NativeFunc {
+	return func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+		if r.opts.Host.SessionHistory == nil {
+			return engine.Undefined(), fmt.Errorf("session.history 未启用")
+		}
+		var from int64
+		if len(args) > 0 {
+			got, err := raw.ToGo(args[0])
+			if err != nil {
+				return engine.Undefined(), fmt.Errorf("session.history 的 from 无法转换: %w", err)
+			}
+			n, ok := toInt64(got)
+			if !ok || n < 0 {
+				return engine.Undefined(), fmt.Errorf("session.history 的 from 必须是非负整数")
+			}
+			from = n
+		}
+		limit := 0
+		if len(args) > 1 {
+			got, err := raw.ToGo(args[1])
+			if err != nil {
+				return engine.Undefined(), fmt.Errorf("session.history 的 limit 无法转换: %w", err)
+			}
+			n, ok := toInt64(got)
+			if !ok || n < 0 {
+				return engine.Undefined(), fmt.Errorf("session.history 的 limit 必须是非负整数")
+			}
+			limit = int(n)
+		}
+		out, err := r.opts.Host.SessionHistory(r.currentContext(), uint64(from), limit)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return raw.FromGo(out)
+	}
+}
+
+// nativeSessionRecent 实现 __adaHost.session.recent(limit)。
+func (r *Runtime) nativeSessionRecent(raw *moejs.Runtime) moejs.NativeFunc {
+	return func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+		if r.opts.Host.SessionRecent == nil {
+			return engine.Undefined(), fmt.Errorf("session.recent 未启用")
+		}
+		limit := 0
+		if len(args) > 0 {
+			got, err := raw.ToGo(args[0])
+			if err != nil {
+				return engine.Undefined(), fmt.Errorf("session.recent 的 limit 无法转换: %w", err)
+			}
+			n, ok := toInt64(got)
+			if !ok || n < 0 {
+				return engine.Undefined(), fmt.Errorf("session.recent 的 limit 必须是非负整数")
+			}
+			limit = int(n)
+		}
+		out, err := r.opts.Host.SessionRecent(r.currentContext(), limit)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		return raw.FromGo(out)
+	}
+}
+
+// nativeStoreGet 实现 ctx.store.get / __adaHost.store.get(key)。
+func (r *Runtime) nativeStoreGet(raw *moejs.Runtime) moejs.NativeFunc {
+	return func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+		if r.opts.Host.StoreGet == nil {
+			return engine.Undefined(), fmt.Errorf("store.get 未启用")
+		}
+		if len(args) < 1 {
+			return engine.Undefined(), fmt.Errorf("store.get(key) 需要键")
+		}
+		key, err := toString(raw, args[0])
+		if err != nil || key == "" {
+			return engine.Undefined(), fmt.Errorf("store.get 的 key 必须是非空字符串")
+		}
+		body, err := r.opts.Host.StoreGet(r.currentContext(), key)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		var v any
+		if err := json.Unmarshal([]byte(body), &v); err != nil {
+			return engine.Undefined(), fmt.Errorf("store.get 的返回值不是 JSON: %w", err)
+		}
+		return raw.FromGo(v)
+	}
+}
+
+// nativeStoreSet 实现 ctx.store.set / __adaHost.store.set(key, value)。
+func (r *Runtime) nativeStoreSet(raw *moejs.Runtime) moejs.NativeFunc {
+	return func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+		if r.opts.Host.StoreSet == nil {
+			return engine.Undefined(), fmt.Errorf("store.set 未启用")
+		}
+		if len(args) < 2 {
+			return engine.Undefined(), fmt.Errorf("store.set(key, value) 需要两个参数")
+		}
+		key, err := toString(raw, args[0])
+		if err != nil || key == "" {
+			return engine.Undefined(), fmt.Errorf("store.set 的 key 必须是非空字符串")
+		}
+		value, err := raw.ToGo(args[1])
+		if err != nil {
+			return engine.Undefined(), fmt.Errorf("store.set 的 value 无法转换: %w", err)
+		}
+		body, err := json.Marshal(value)
+		if err != nil {
+			return engine.Undefined(), fmt.Errorf("store.set 的 value 无法编码: %w", err)
+		}
+		if err := r.opts.Host.StoreSet(r.currentContext(), key, string(body)); err != nil {
+			return engine.Undefined(), err
+		}
+		return engine.Undefined(), nil
+	}
+}
+
+// nativeStoreDelete 实现 ctx.store.delete / __adaHost.store.delete(key)。
+func (r *Runtime) nativeStoreDelete(raw *moejs.Runtime) moejs.NativeFunc {
+	return func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+		if r.opts.Host.StoreDelete == nil {
+			return engine.Undefined(), fmt.Errorf("store.delete 未启用")
+		}
+		if len(args) < 1 {
+			return engine.Undefined(), fmt.Errorf("store.delete(key) 需要键")
+		}
+		key, err := toString(raw, args[0])
+		if err != nil || key == "" {
+			return engine.Undefined(), fmt.Errorf("store.delete 的 key 必须是非空字符串")
+		}
+		if err := r.opts.Host.StoreDelete(r.currentContext(), key); err != nil {
+			return engine.Undefined(), err
+		}
+		return engine.Undefined(), nil
+	}
+}
+
+// nativeStoreList 实现 ctx.store.list / __adaHost.store.list(prefix)。
+func (r *Runtime) nativeStoreList(raw *moejs.Runtime) moejs.NativeFunc {
+	return func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
+		if r.opts.Host.StoreList == nil {
+			return engine.Undefined(), fmt.Errorf("store.list 未启用")
+		}
+		prefix := ""
+		if len(args) > 0 {
+			if p, err := toString(raw, args[0]); err == nil {
+				prefix = p
+			}
+		}
+		body, err := r.opts.Host.StoreList(r.currentContext(), prefix)
+		if err != nil {
+			return engine.Undefined(), err
+		}
+		var keys []string
+		if err := json.Unmarshal([]byte(body), &keys); err != nil {
+			return engine.Undefined(), fmt.Errorf("store.list 的返回值不是 JSON 数组: %w", err)
+		}
+		return raw.FromGo(keys)
+	}
+}
+
 func (r *Runtime) nativeTool(raw *moejs.Runtime) moejs.NativeFunc {
 	return func(_ *engine.Realm, _ engine.Value, args []engine.Value) (engine.Value, error) {
 		if r.opts.Host.Tool == nil {

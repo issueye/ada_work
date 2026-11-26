@@ -50,6 +50,9 @@ const p = path.join("/workspace", "out.txt")
 | `node:perf_hooks` | `ada_jsrt/jsrt/nodemods` | `performance.now`(宿主单调时钟)/`timeOrigin`/`mark`/`measure`/`getEntries*`/`clear*` + `PerformanceObserver`(微任务投递) |
 | `ada:fs` / `ada:shell` | `platform/bridge` | **旧接口,保留兼容**;不经过 Node 运行时 |
 | `ada:secrets` | `platform/bridge` | `get(name)` 按名读 secret、`has(name)` 只回答能否读到;走 `seam/secrets` 链(provider + policy),key 不进配置/日志 |
+| `ada:plan` | `platform/bridge` | `get()` / `set(plan)` / `update(index, status)` 读写当前会话计划;必须有会话上下文(工具调用),写入 `plugin:plan/updated` session 事件 |
+| `ada:session` | `platform/bridge` | `current()` 返回 `{id,title,workspace}`;`append(kind, data)` 写插件自有事件;`history(from?,limit?)` / `recent(limit?)` 有界读取事件 |
+| `ada:store` | `platform/bridge` | 插件私有 KV:`get/set/remove/list`;进程内,随插件卸载丢弃,不持久化 |
 
 `node:*` 与裸名(`fs`、`path`、`os`、`events`、`buffer` ...)解析到同一份模块实例。
 

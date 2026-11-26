@@ -178,6 +178,7 @@ pwsh scripts/guard.ps1
 3. `core/compaction-basic`:超预算时生成摘要并写 `compact/summary`。
 4. 多进程租约与跨进程恢复。
 5. 日志裁剪/归档策略(当前只追加摘要)。
-6. TS 侧访问:JS 插件目前没有 `ada:session` 模块;需要先把 seam 服务暴露给 bridge。
+6. TS 侧访问:bridge 提供 `ada:session`(身份、插件自有事件追加、`history`/`recent`
+   有界读取)与 `ada:store`;没有无限量的事件导出接口(见 [bridge-session-store.md](bridge-session-store.md))。
 7. 版本协商:消费者声明期望的 seam 版本,provider 版本不足时应在 `Registry.Open` 阶段拒绝
    (现在只比较 `Provider.Version()`,没有消费者侧期望)。

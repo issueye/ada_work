@@ -3,6 +3,7 @@ package jsrt_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/issueye/ada_jsrt/jsrt"
@@ -87,5 +88,56 @@ func TestHostCallbackErrorsSurfaceInJS(t *testing.T) {
 	_, err = rt.CallWithHost(context.Background(), "run")
 	if err == nil {
 		t.Fatalf("未启用 provide 时应抛错")
+	}
+}
+
+// ada:plan 的宿主回调:参数与返回值都必须经过 __adaHost.plan。
+func TestHostPlanCallbacks(t *testing.T) {
+	art := newArtifact(t, map[string]string{
+		"plugin.ts": `export function run() {
+  const host = (globalThis as any).__adaHost
+  const setOut = host.plan.set(JSON.stringify({ steps: [{ content: "a" }] }))
+  const updateOut = host.plan.update(1, "completed")
+  const getOut = host.plan.get()
+  return [setOut, updateOut, getOut].join("|")
+}`,
+	})
+	var (
+		gotSet    string
+		gotIndex  int
+		gotStatus string
+	)
+	rt, err := jsrt.New(context.Background(), jsrt.Options{
+		Artifact: art,
+		Host: jsrt.Host{
+			PlanGet: func(context.Context) (string, error) { return `{"steps":[]}`, nil },
+			PlanSet: func(_ context.Context, body string) (string, error) {
+				gotSet = body
+				return body, nil
+			},
+			PlanUpdate: func(_ context.Context, index int, status string) (string, error) {
+				gotIndex, gotStatus = index, status
+				return `{"ok":true}`, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("装配失败: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close(context.Background()) })
+
+	out, err := rt.CallWithHost(context.Background(), "run")
+	if err != nil {
+		t.Fatalf("调用失败: %v", err)
+	}
+	if gotSet == "" || !strings.Contains(gotSet, `"content":"a"`) {
+		t.Fatalf("plan.set 参数不符: %q", gotSet)
+	}
+	if gotIndex != 1 || gotStatus != "completed" {
+		t.Fatalf("plan.update 参数不符: index=%d status=%q", gotIndex, gotStatus)
+	}
+	text, _ := out.(string)
+	if !strings.Contains(text, `{"steps":[]}`) || !strings.Contains(text, `{"ok":true}`) {
+		t.Fatalf("plan 返回值不符: %q", text)
 	}
 }

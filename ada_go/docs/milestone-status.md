@@ -36,7 +36,8 @@
 | C5 agent-loop | `plugins/core/agent-loop` | `agentloop.TestTurnWithReplayAndTool`、`TestContextBudgetReturnsECONTEXT`、`TestCompactionFitsBudget`、`TestParallelTools` | 并行工具(maxParallelTools);contextBudget + compaction-basic;模型摘要可选;无 core/agent 拆分 |
 | C6 最小 preset + golden | `examples/agent` | `ada plan/up --preset examples/agent/agent.preset.json`;事件序列 golden;`TestRealAgentTurn` 实测真实端点 tool call | 默认回放模型;真实端点需 env |
 | C7 策略桩 | `plugins/policy/approval-gate`、`llm-retry`、`tool-timeout` | approval-gate 2、llm-retry 3、tool-timeout 1 | 全部落地;后续可加 tool-repeat-guard 等 |
-| C8 会话级计划 | `plugins/seam/plan`、`plugins/core/plan` | `core/plan` 单测、`agent-loop.TestPlanInjectedBeforeLastUserMessage`、`control-acp.TestPlanMapping`、`cli.TestACPServe` | 只注入最新计划;步骤状态由模型显式更新;TS 工具暂不能读写计划 |
+| C8 会话级计划 | `plugins/seam/plan`、`plugins/core/plan`、`platform/bridge`(`ada:plan`) | `core/plan` 单测、`agent-loop.TestPlanInjectedBeforeLastUserMessage`、`control-acp.TestPlanMapping`、`bridge.TestJSPlanModule`、`cli.TestACPServe` | 只注入最新计划;步骤状态由模型显式更新;TS 通过 `ada:plan` 访问 |
+| C9 脚本会话与私有状态 | `platform/bridge`(`ada:session`、`ctx.store`、`ada:store`)、`ada_jsrt/jsrt` | `bridge.TestJSSessionAndStore`、`bridge.TestJSSessionHistory`、`jsrt.TestHostPlanCallbacks` | 插件事件强制 `plugin:<id>/` + Ignorable;store 进程内、重启不保留;事件读取有界(≤200 条 / 256 KiB) |
 
 ## 2. M5 验收矩阵
 

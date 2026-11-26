@@ -347,6 +347,11 @@ func sessionUpdateParams(u control.Update) map[string]any {
 		}
 		update = map[string]any{"sessionUpdate": "plan", "entries": entries}
 	default:
+		// 插件自有事件(plugin:<id>/...)没有 ACP 等价物,不向客户端发明非法
+		// sessionUpdate;plan 已在上面的显式分支里映射。
+		if strings.HasPrefix(u.Kind, "plugin:") {
+			return nil
+		}
 		if len(u.Data) > 0 {
 			update["data"] = u.Data
 		}

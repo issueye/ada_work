@@ -216,3 +216,12 @@ func TestPlanMapping(t *testing.T) {
 		t.Fatalf("第二步不符: %+v", entries[1])
 	}
 }
+
+func TestPluginEventSkipped(t *testing.T) {
+	if params := sessionUpdateParams(control.Update{
+		SessionID: "s1", Kind: "plugin:js-session/note",
+		Data: json.RawMessage(`{"n":1}`),
+	}); params != nil {
+		t.Fatalf("插件自有事件不应发给 ACP: %+v", params)
+	}
+}

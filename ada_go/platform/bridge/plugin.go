@@ -296,6 +296,8 @@ func (p *Plugin) Apply(ctx *kernel.Context, cfg kernel.Config) (kernel.Dispose, 
 	if v, ok := ctx.TryService("secrets"); ok {
 		secretsChain, _ = v.(*seamsecrets.Chain)
 	}
+	// 插件私有 KV:进程内,随 fiber 卸载丢弃;持久化需要 storage seam。
+	store := newPluginStore()
 	modules := map[string]*moejs.Module{}
 	if shellChain != nil {
 		// run 保留旧契约(返回 stdout 字符串,非零退出抛错);exec 返回结构化结果,
@@ -330,6 +332,40 @@ export function has(name) { try { get(name); return true } catch (_err) { return
 		return nil, kernel.Wrap(kernel.CodeInvalid, cerr, "JS 插件 %s 注入模块编译失败", p.opts.Name)
 	}
 	modules["ada:secrets"] = sm
+	// ada:plan 始终可导入:计划属于会话,宿主函数从调用 ctx 取会话;
+	// 没有会话上下文时 get/set/update 返回明确错误,而不是写到某个猜出来的会话。
+	pm, cerr := moejs.Compile("ada:plan", `const host = globalThis.__adaHost;
+export function get() { return JSON.parse(host.plan.get()); }
+export function set(plan) { return JSON.parse(host.plan.set(JSON.stringify(plan))); }
+export function update(index, status) { return JSON.parse(host.plan.update(index, status)); }
+`)
+	if cerr != nil {
+		return nil, kernel.Wrap(kernel.CodeInvalid, cerr, "JS 插件 %s 注入模块编译失败", p.opts.Name)
+	}
+	modules["ada:plan"] = pm
+	// ada:session 提供会话身份与「插件自有事件」追加;写事件时由宿主加
+	// plugin:<id>/ 前缀并强制 Ignorable,脚本不能伪造模型可见事件。
+	sessionMod, cerr := moejs.Compile("ada:session", `const host = globalThis.__adaHost;
+export function current() { const v = host.session.current(); return v === null ? null : JSON.parse(v); }
+export function append(kind, data) { return host.session.append(String(kind), JSON.stringify(data === undefined ? null : data)); }
+export function history(from, limit) { return JSON.parse(host.session.history(Number(from) || 0, Number(limit) || 0)); }
+export function recent(limit) { return JSON.parse(host.session.recent(Number(limit) || 0)); }
+`)
+	if cerr != nil {
+		return nil, kernel.Wrap(kernel.CodeInvalid, cerr, "JS 插件 %s 注入模块编译失败", p.opts.Name)
+	}
+	modules["ada:session"] = sessionMod
+	// ada:store 是 ctx.store 的模块形式:插件私有、进程内 KV;重启不保留。
+	storeMod, cerr := moejs.Compile("ada:store", `const host = globalThis.__adaHost;
+export function get(key) { return host.store.get(String(key)); }
+export function set(key, value) { host.store.set(String(key), value); }
+export function remove(key) { host.store.delete(String(key)); }
+export function list(prefix) { return host.store.list(String(prefix || "")); }
+`)
+	if cerr != nil {
+		return nil, kernel.Wrap(kernel.CodeInvalid, cerr, "JS 插件 %s 注入模块编译失败", p.opts.Name)
+	}
+	modules["ada:store"] = storeMod
 	rt, err := jsrt.New(actx, jsrt.Options{
 		Artifact:    p.opts.Artifact,
 		Logf:        p.record,
@@ -520,6 +556,23 @@ export function has(name) { try { get(name); return true } catch (_err) { return
 				}
 				return string(b), nil
 			},
+			// ada:plan 的宿主实现:从调用 ctx 取会话,写 plugin:plan/updated 事件。
+			PlanGet:    planGet,
+			PlanSet:    planSet,
+			PlanUpdate: planUpdate,
+			// ada:session:身份读取 + 插件自有事件追加(kind 由宿主加前缀)。
+			SessionCurrent: sessionCurrent,
+			SessionAppend: func(sctx context.Context, kind, dataJSON string) (uint64, error) {
+				return sessionAppend(p.opts.Name, sctx, kind, dataJSON)
+			},
+			// ada:session 的只读事件接口:history 分页,recent 取最近 N 条。
+			SessionHistory: sessionHistory,
+			SessionRecent:  sessionRecent,
+			// ctx.store / ada:store:插件私有、进程内 KV。
+			StoreGet:    store.get,
+			StoreSet:    store.set,
+			StoreDelete: store.del,
+			StoreList:   store.list,
 			Tool: func(name, summary string, input map[string]any, readOnly bool, timeout time.Duration, invoke func(ctx context.Context, args any) (any, error)) error {
 				if toolsReg == nil {
 					return fmt.Errorf("tools 服务不可用")

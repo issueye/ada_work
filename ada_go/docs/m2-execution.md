@@ -95,7 +95,7 @@ TS 源文件 ──compile.Build──▶ Artifact(每个文件的 JS,纯数据)
 
 `bridge.Plugin` 实现 `kernel.Plugin`,入口约定与 AGENTS §6.2 一致:**`apply(ctx, config)`**。
 
-JS 侧 `ctx` 目前有六个能力:
+JS 侧 `ctx` 目前有七个能力:
 
 | 能力 | 方向 | 行为 |
 |---|---|---|
@@ -105,6 +105,7 @@ JS 侧 `ctx` 目前有六个能力:
 | `ctx.on(event, handler)` | 内核 → JS | 暂存注册;提交为内核监听器,事件触发时把载荷投递到 worker 执行 JS 函数 |
 | `ctx.effect(label, cleanup)` | JS → 宿主 | 暂存;fiber 卸载时按逆序执行 JS 清理函数 |
 | `ctx.waterfall(event, handler)` | 双向 | 暂存注册;提交为内核 waterfall 中间件,JS 可用 `next` 同步继续下游 |
+| `ctx.store.get/set/delete/list` | JS → 宿主 | 插件私有、进程内 KV;与 `ada:store` 共享实例,见 [bridge-session-store.md](bridge-session-store.md) |
 
 **写方向为什么暂存**:内核的生命周期操作是单写者(M1 §1),而 JS 跑在自己的 goroutine 上。直接在 JS 线程里 `Provide`/`Emit` 会同时触碰服务表、事件总线与 fiber 表;加锁只能消除数据竞争,消除不了「半新半旧的依赖图」这类语义竞争。
 
