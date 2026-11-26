@@ -14,6 +14,7 @@ package controlacp
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 
 	"github.com/issueye/ada_go_v2/platform/kernel"
@@ -197,7 +198,11 @@ func (e *Endpoint) forwardUpdates(ch <-chan control.Update) {
 			if !ok {
 				return
 			}
-			if err := e.conn.Notify(context.Background(), "session/update", sessionUpdateParams(u)); err != nil {
+			params := sessionUpdateParams(u)
+			if params == nil {
+				continue
+			}
+			if err := e.conn.Notify(context.Background(), "session/update", params); err != nil {
 				return
 			}
 		}
@@ -208,21 +213,190 @@ func sessionUpdateParams(u control.Update) map[string]any {
 	update := map[string]any{"sessionUpdate": u.Kind}
 	switch u.Kind {
 	case "assistant/message", "assistant_message":
+		text, recognized := assistantText(u.Data)
+		if !recognized {
+			// 未知形状:原样透出,至少不丢内容。
+			text = string(u.Data)
+		}
+		if text == "" {
+			// 纯工具调用的 assistant 消息没有文本,不产生空 chunk。
+			return nil
+		}
 		update["sessionUpdate"] = "agent_message_chunk"
-		var p struct {
-			Text string `json:"text"`
+		update["content"] = map[string]any{"type": "text", "text": text}
+	case "tool/call", "tool_call":
+		if mapped := toolCallUpdate(u.Data); mapped != nil {
+			update = mapped
+		} else if len(u.Data) > 0 {
+			update["data"] = u.Data
 		}
-		_ = json.Unmarshal(u.Data, &p)
-		if p.Text == "" {
-			p.Text = string(u.Data)
+	case "tool/result", "tool_result":
+		if mapped := toolResultUpdate(u.Data); mapped != nil {
+			update = mapped
+		} else if len(u.Data) > 0 {
+			update["data"] = u.Data
 		}
-		update["content"] = map[string]any{"type": "text", "text": p.Text}
 	default:
 		if len(u.Data) > 0 {
 			update["data"] = u.Data
 		}
 	}
 	return map[string]any{"sessionId": u.SessionID, "update": update}
+}
+
+// toolCallUpdate 把 session 的 tool/call 事件映射成 ACP tool_call。
+//
+// 载荷是 tools.CallInfo:{"id","name","args"};id 是 ACP 关联后续
+// tool_call_update 的唯一键,缺失时不做映射(避免产生无法收尾的 UI 条目)。
+func toolCallUpdate(raw json.RawMessage) map[string]any {
+	var info struct {
+		ID   string          `json:"id"`
+		Name string          `json:"name"`
+		Args json.RawMessage `json:"args"`
+	}
+	if err := json.Unmarshal(raw, &info); err != nil || info.ID == "" {
+		return nil
+	}
+	title := info.Name
+	if title == "" {
+		title = info.ID
+	}
+	out := map[string]any{
+		"sessionUpdate": "tool_call",
+		"toolCallId":    info.ID,
+		"title":         title,
+		"kind":          toolKind(info.Name),
+		"status":        "in_progress",
+	}
+	if len(info.Args) > 0 {
+		out["rawInput"] = info.Args
+	}
+	return out
+}
+
+// toolResultUpdate 把 session 的 tool/result 事件映射成 ACP tool_call_update。
+//
+// 载荷是 agent-loop 的 {"call":CallInfo,"result":Result};只把文本内容交给
+// ACP,原始 details 放进 rawOutput,避免把私有字段写进 content。
+func toolResultUpdate(raw json.RawMessage) map[string]any {
+	var payload struct {
+		Call struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"call"`
+		Result struct {
+			Content []struct {
+				Kind string `json:"kind"`
+				Text string `json:"text"`
+			} `json:"content"`
+			Status  string          `json:"status"`
+			Details json.RawMessage `json:"details"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || payload.Call.ID == "" {
+		return nil
+	}
+	out := map[string]any{
+		"sessionUpdate": "tool_call_update",
+		"toolCallId":    payload.Call.ID,
+		"status":        toolStatus(payload.Result.Status),
+	}
+	var b strings.Builder
+	for _, block := range payload.Result.Content {
+		if block.Kind == "" || block.Kind == "text" {
+			b.WriteString(block.Text)
+		}
+	}
+	if b.Len() > 0 {
+		out["content"] = []map[string]any{{
+			"type":    "content",
+			"content": map[string]any{"type": "text", "text": b.String()},
+		}}
+	}
+	if len(payload.Result.Details) > 0 {
+		out["rawOutput"] = payload.Result.Details
+	}
+	return out
+}
+
+// toolKind 把工具名映射成 ACP 的 ToolKind;只做粗分类,未知一律 other。
+func toolKind(name string) string {
+	n := strings.ToLower(name)
+	switch {
+	case strings.Contains(n, "search"), strings.Contains(n, "grep"), strings.Contains(n, "find"):
+		return "search"
+	case strings.Contains(n, "read"), strings.Contains(n, "list"), strings.Contains(n, "view"):
+		return "read"
+	case strings.Contains(n, "delete"), strings.Contains(n, "remove"):
+		return "delete"
+	case strings.Contains(n, "move"), strings.Contains(n, "rename"):
+		return "move"
+	case strings.Contains(n, "write"), strings.Contains(n, "edit"),
+		strings.Contains(n, "patch"), strings.Contains(n, "replace"):
+		return "edit"
+	case strings.Contains(n, "shell"), strings.Contains(n, "exec"),
+		strings.Contains(n, "command"), strings.Contains(n, "run"):
+		return "execute"
+	case strings.Contains(n, "http"), strings.Contains(n, "fetch"), strings.Contains(n, "web"):
+		return "fetch"
+	}
+	return "other"
+}
+
+// toolStatus 把 tools.Status 映射成 ACP 的 ToolCallStatus。
+// 未知状态按失败处理:宁可让 UI 显示失败,也不假装成功。
+func toolStatus(s string) string {
+	switch s {
+	case "ok", "":
+		return "completed"
+	}
+	return "failed"
+}
+
+// textBlock 是 assistant/user 消息里的一小块内容。
+type textBlock struct {
+	Kind string `json:"kind"`
+	Text string `json:"text"`
+}
+
+// assistantText 从 session 的 assistant/message 事件里取文本。
+//
+// agent-loop 的载荷是 {"message":{"content":[{"kind":"text","text":...}]}};
+// 兼容控制层实现直接发 {"text":...} 或 {"content":[...]} 的形态。
+// 第二个返回值表示「认得这个形状」:纯工具调用的空消息返回 ("", true),
+// 调用方据此不产生空 chunk;完全不认识的 JSON 才回退原文。
+func assistantText(raw json.RawMessage) (string, bool) {
+	var envelope struct {
+		Message json.RawMessage `json:"message"`
+		Content []textBlock     `json:"content"`
+		Text    *string         `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return "", false
+	}
+	blocks := envelope.Content
+	recognized := envelope.Message != nil || envelope.Content != nil || envelope.Text != nil
+	if envelope.Message != nil {
+		var msg struct {
+			Content []textBlock `json:"content"`
+		}
+		if err := json.Unmarshal(envelope.Message, &msg); err == nil {
+			blocks = msg.Content
+		}
+	}
+	var b strings.Builder
+	for _, c := range blocks {
+		if c.Kind == "" || c.Kind == "text" {
+			b.WriteString(c.Text)
+		}
+	}
+	if b.Len() > 0 {
+		return b.String(), true
+	}
+	if envelope.Text != nil {
+		return *envelope.Text, true
+	}
+	return "", recognized
 }
 
 func rpcError(err error) *jsonrpc2.Error {

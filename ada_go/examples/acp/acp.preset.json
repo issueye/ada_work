@@ -1,0 +1,8 @@
+{
+  "name": "acp",
+  "plugins": ["plugins"],
+  "patch": {
+    "llm-replay": {"path": "examples/acp/replay.jsonl"},
+    "agent-loop": {"model": "replay"}
+  }
+}

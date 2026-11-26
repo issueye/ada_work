@@ -25,6 +25,9 @@ import (
 	"github.com/issueye/ada_go_v2/platform/plugin"
 	"github.com/issueye/ada_go_v2/platform/preset"
 	agentloop "github.com/issueye/ada_go_v2/plugins/core/agent-loop"
+	controlacp "github.com/issueye/ada_go_v2/plugins/provider/control-acp"
+	"github.com/issueye/ada_go_v2/plugins/provider/jsonrpc2"
+	seamcontrol "github.com/issueye/ada_go_v2/plugins/seam/control"
 	seamfs "github.com/issueye/ada_go_v2/plugins/seam/fs"
 	seamsession "github.com/issueye/ada_go_v2/plugins/seam/session"
 	seamshell "github.com/issueye/ada_go_v2/plugins/seam/shell"
@@ -33,6 +36,14 @@ import (
 
 // Run 执行一条命令并返回退出码:0 成功 / 1 计划或装配失败 / 2 用法错误。
 func Run(args []string, out, errOut io.Writer) int {
+	return RunWithIO(args, os.Stdin, out, errOut)
+}
+
+// RunWithIO 与 Run 相同,但显式注入标准输入。
+//
+// 只有流式命令(acp)会读 in;其余命令忽略它。单独暴露是为了让测试
+// 不必替换 os.Stdin。
+func RunWithIO(args []string, in io.Reader, out, errOut io.Writer) int {
 	if len(args) == 0 {
 		usage(errOut)
 		return 2
@@ -46,6 +57,8 @@ func Run(args []string, out, errOut io.Writer) int {
 		return cmdInspect(args[1:], out, errOut)
 	case "agent":
 		return cmdAgent(args[1:], out, errOut)
+	case "acp":
+		return cmdACP(args[1:], in, out, errOut)
 	case "verify":
 		return cmdVerify(args[1:], out, errOut)
 	case "install":
@@ -82,6 +95,7 @@ func usage(w io.Writer) {
   ada up      <插件目录|--preset 文件>
   ada inspect <插件目录|--preset 文件> [-json] [-chain]
   ada agent   <插件目录|--preset 文件> -message <文本> [-workspace <id>] [-json]
+  ada acp     <插件目录|--preset 文件>
   ada verify  <插件目录> [-keys 密钥文件] [-require-signature]
   ada install <插件目录> -dest <安装根> [-keys 密钥文件] [-require-signature] [-yes]
   ada list    -dest <安装根>
@@ -94,6 +108,8 @@ func usage(w io.Writer) {
   ada serve-repo -root <目录> -addr <地址> [-token <token>]
   ada serve   -root <目录> -addr <地址> [-token <token>] [-rate-limit N]
   ada update  <插件 id> -repo <仓库目录> |-repo-url <索引 URL> -dest <安装根> [-keys 密钥文件] [-require-signature] [-require-repo-signature] [-yes]
+
+acp 在 stdin/stdout 上说 JSON-RPC 2.0(ACP);stdout 只输出协议消息,日志一律走 stderr。
 
 退出码:0=成功,1=计划不可执行/装配或校验失败,2=用法错误。
 `)
@@ -447,6 +463,76 @@ func cmdAgent(args []string, out, errOut io.Writer) int {
 	}
 	return 0
 }
+
+// cmdACP 在 stdin/stdout 上跑 ACP,直到对端关闭输入。
+//
+// 它只做宿主映射:装配 preset、取 control 服务、把连接交给 control-acp。
+// stdout 只放协议消息,日志/警告/装配输出全部走 stderr,避免污染 JSON-RPC。
+func cmdACP(args []string, in io.Reader, out, errOut io.Writer) int {
+	t := parseTarget(args)
+	if t.bad != "" {
+		fmt.Fprintln(errOut, t.bad)
+		usage(errOut)
+		return 2
+	}
+	manifests, err := loadTarget(t)
+	if err != nil {
+		fmt.Fprintln(errOut, "加载失败:", err)
+		return 1
+	}
+	report := assemble.Plan(manifests)
+	if !report.OK() {
+		for _, p := range report.Problems {
+			fmt.Fprintln(errOut, "问题:", p.String())
+		}
+		fmt.Fprintln(errOut, "结果: 不可装配")
+		return 1
+	}
+	app, _, err := mountAll(manifests, report, errOut)
+	if err != nil {
+		fmt.Fprintln(errOut, "装配失败:", err)
+		return 1
+	}
+	defer func() { _ = app.Stop(context.Background()) }()
+
+	raw, err := app.Root().Service(seamcontrol.ServiceName)
+	if err != nil {
+		fmt.Fprintln(errOut, "没有 control 服务(需要在 preset 里启用 agent-control):", err)
+		return 1
+	}
+	inv, ok := raw.(seamcontrol.Invoker)
+	if !ok {
+		fmt.Fprintln(errOut, "control 服务类型不正确")
+		return 1
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conn := jsonrpc2.New(ctx, &stdioRWC{in: in, out: out})
+	ep := controlacp.New(conn, seamcontrol.New(inv))
+	defer func() { _ = ep.Close() }()
+	ep.BindUpdates(app.Root())
+	// 有 approval 服务时把权限交给 ACP client;没有就保持「未实现」,不静默放行。
+	if _, ok := app.Root().TryService("approval"); ok {
+		if _, err := ep.BindApproval(app.Root()); err != nil {
+			fmt.Fprintln(errOut, "注册 ACP 审批人失败:", err)
+			return 1
+		}
+	}
+	<-conn.Done()
+	return 0
+}
+
+// stdioRWC 把 stdin/stdout 合成双向流;Close 不关闭真实 stdio,
+// 所有权仍属于宿主进程。
+type stdioRWC struct {
+	in  io.Reader
+	out io.Writer
+}
+
+func (s *stdioRWC) Read(p []byte) (int, error)  { return s.in.Read(p) }
+func (s *stdioRWC) Write(p []byte) (int, error) { return s.out.Write(p) }
+func (s *stdioRWC) Close() error                { return nil }
 
 func cmdInspect(args []string, out, errOut io.Writer) int {
 	t := parseTarget(args)

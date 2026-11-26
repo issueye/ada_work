@@ -108,6 +108,30 @@ func TestACPInitializeAndPrompt(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("没有收到 session/update")
 	}
+
+	// agent-loop 的真实载荷是 {"message":{"content":[...]}};不能把整段 JSON 当成文本。
+	updates <- control.Update{
+		SessionID: "s1", Kind: "assistant/message",
+		Data: json.RawMessage(`{"message":{"role":"assistant","content":[{"kind":"text","text":"你好"}]}}`),
+	}
+	select {
+	case msg := <-notifications:
+		var params struct {
+			Update struct {
+				Content struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"update"`
+		}
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			t.Fatalf("通知参数非法: %v", err)
+		}
+		if params.Update.Content.Text != "你好" {
+			t.Fatalf("assistant 载荷文本不符: %q", params.Update.Content.Text)
+		}
+	case <-ctx.Done():
+		t.Fatal("没有收到第二条 session/update")
+	}
 }
 
 // acpClient 创建一个测试用的 ACP 客户端/服务端对。
@@ -239,5 +263,85 @@ func TestACPBindApproval(t *testing.T) {
 	})
 	if err != nil || dec.Allow {
 		t.Fatalf("未知选项应 fail-closed: %+v err=%v", dec, err)
+	}
+}
+
+func waitUpdate(t *testing.T, ch <-chan jsonrpc2.Message, ctx context.Context) map[string]any {
+	t.Helper()
+	select {
+	case msg := <-ch:
+		if msg.Method != "session/update" {
+			t.Fatalf("通知方法不符: %s", msg.Method)
+		}
+		var params struct {
+			Update map[string]any `json:"update"`
+		}
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			t.Fatalf("通知参数非法: %v", err)
+		}
+		return params.Update
+	case <-ctx.Done():
+		t.Fatal("没有收到 session/update")
+		return nil
+	}
+}
+
+func TestACPToolUpdates(t *testing.T) {
+	a, b := net.Pipe()
+	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	notifications := make(chan jsonrpc2.Message, 1)
+	client := jsonrpc2.New(ctx, a, jsonrpc2.WithNotificationHandler(func(m jsonrpc2.Message) {
+		select {
+		case notifications <- m:
+		default:
+		}
+	}))
+	t.Cleanup(func() { _ = client.Close() })
+	server := jsonrpc2.New(ctx, b)
+	ep := controlacp.New(server, control.New(&fakeControl{}))
+	t.Cleanup(func() { _ = ep.Close() })
+	updates := make(chan control.Update, 1)
+	ep.SetUpdates(updates)
+
+	updates <- control.Update{
+		SessionID: "s1", Kind: "tool/call",
+		Data: json.RawMessage(`{"id":"call-1","name":"read_file","args":{"path":"a.txt"}}`),
+	}
+	call := waitUpdate(t, notifications, ctx)
+	if call["sessionUpdate"] != "tool_call" || call["toolCallId"] != "call-1" ||
+		call["kind"] != "read" || call["status"] != "in_progress" {
+		t.Fatalf("tool_call 映射不符: %+v", call)
+	}
+	if raw, ok := call["rawInput"].(map[string]any); !ok || raw["path"] != "a.txt" {
+		t.Fatalf("tool_call rawInput 不符: %+v", call["rawInput"])
+	}
+
+	updates <- control.Update{
+		SessionID: "s1", Kind: "tool/result",
+		Data: json.RawMessage(`{"call":{"id":"call-1","name":"read_file"},"result":{"content":[{"kind":"text","text":"hello"}],"status":"ok"}}`),
+	}
+	done := waitUpdate(t, notifications, ctx)
+	if done["sessionUpdate"] != "tool_call_update" || done["toolCallId"] != "call-1" || done["status"] != "completed" {
+		t.Fatalf("tool_call_update 映射不符: %+v", done)
+	}
+	content, _ := done["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("工具结果内容数量不符: %+v", content)
+	}
+	first, _ := content[0].(map[string]any)
+	inner, _ := first["content"].(map[string]any)
+	if first["type"] != "content" || inner["text"] != "hello" {
+		t.Fatalf("工具结果内容不符: %+v", first)
+	}
+
+	updates <- control.Update{
+		SessionID: "s1", Kind: "tool/result",
+		Data: json.RawMessage(`{"call":{"id":"call-1"},"result":{"status":"timeout","content":[{"kind":"text","text":"超时"}]}}`),
+	}
+	failed := waitUpdate(t, notifications, ctx)
+	if failed["status"] != "failed" {
+		t.Fatalf("失败状态应映射为 failed: %+v", failed)
 	}
 }

@@ -116,3 +116,18 @@ func TestHandlerContextCanceledOnClose(t *testing.T) {
 		t.Fatal("连接关闭后 handler ctx 未取消")
 	}
 }
+
+func TestDone(t *testing.T) {
+	a, _ := pipePair(t)
+	select {
+	case <-a.Done():
+		t.Fatal("未关闭时 Done 不应关闭")
+	default:
+	}
+	_ = a.Close()
+	select {
+	case <-a.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Close 后 Done 应关闭")
+	}
+}

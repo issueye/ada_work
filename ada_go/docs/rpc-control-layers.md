@@ -1,6 +1,6 @@
 # RPC/ACP 五层控制架构
 
-> 状态：**第 2 层控制契约 + Go/TS 实现、第 3 层 control-rpc/ACP 适配、第 4 层 jsonrpc2、第 5 层 stdio 已落地**；ACP 的 permission 已接，文件/终端回调待做。
+> 状态：**第 2 层控制契约 + Go/TS 实现、第 3 层 control-rpc/ACP 适配、第 4 层 jsonrpc2、第 5 层 stdio、宿主入口 `ada acp` 已落地**；ACP 的 permission 已接，文件/终端回调待做。
 > 关联：[seam-rpc.md](seam-rpc.md)、[AGENTS §2/§3](../AGENTS.md)。
 
 ## 0. 结论
@@ -99,7 +99,8 @@ prompt 未返回时到达对端（不是结束后补发）。
 | `provider/rpc-json` | 3+4 | ◐ 现有 v1 协议；尚未拆成 control 适配 + frame 通道 |
 | `provider/control-rpc` | 3 | ✅ v1 方法 ↔ `control.Invoker`（Client + Register）；已用真实 rpc-json + tcp 跑通端到端 |
 | `provider/jsonrpc2` | 4 | ✅ 双向 JSON-RPC 2.0 连接、id/错误/通知、行上限；连接关闭会取消 handler ctx |
-| `provider/control-acp` | 3 | ✅ initialize/session/new/load/prompt/cancel；`session/update` 实时转发；`session/request_permission` + `approval.Approver`；无 fs/terminal |
+| `provider/control-acp` | 3 | ✅ initialize/session/new/load/prompt/cancel；`session/update` 实时转发（assistant 文本 + tool_call/tool_call_update）；`session/request_permission` + `approval.Approver`；无 fs/terminal |
+| `platform/host/cli`（`ada acp`） | 宿主入口 | ✅ 装配 preset → control 服务 → stdio 上的 ACP；日志走 stderr |
 | `provider/rpc-stdio` | 5 | ✅ stdio 单连接 Transport + Listener |
 
 ## 4. 为什么 TS 实现不破坏插件系统
@@ -122,6 +123,21 @@ prompt 未返回时到达对端（不是结束后补发）。
 所以工具调用与中间消息能在 prompt 未返回时到达适配器。粒度是「事件」而不是
 「token 增量」：`assistant/message` 是整段消息，真正的逐 token 需要 `llm.stream`
 回调进入 session 事件，属于后续工作。
+
+ACP 适配器从会话事件里提取文本，而不是把整段 JSON 当文本：
+`assistant/message` 的 `{"message":{"content":[{"kind":"text","text":...}]}}`
+会被展开成 `agent_message_chunk.content.text`，同时兼容控制层直接发
+`{"text":...}` 的简化形态。
+
+工具事件也映射成 ACP 的对应形状（而不是 `data` 透传）：
+
+| 会话事件 | ACP `session/update` | 关键字段 |
+|---|---|---|
+| `tool/call` | `tool_call` | `toolCallId`、`title`、`kind`（read/edit/execute/…）、`status=in_progress`、`rawInput` |
+| `tool/result` | `tool_call_update` | `toolCallId`、`status=completed/failed`、`content`（文本块）、`rawOutput` |
+
+纯工具调用的 assistant 消息（没有文本）不产生空 `agent_message_chunk`；
+未知工具状态按 `failed` 处理（fail-closed）。
 
 ## 6. 协议适配方向
 
@@ -149,6 +165,9 @@ session/load        -> Client.Load
 session/prompt      -> Client.Prompt
 session/cancel      -> Client.Cancel
 session/update      <- control/update 事件
+  assistant/message -> agent_message_chunk
+  tool/call         -> tool_call
+  tool/result       -> tool_call_update
 ```
 
 权限是反方向的：agent 内的 `approval.Ask` 调用 ACP client：
@@ -166,6 +185,21 @@ dispose, err := ep.BindApproval(ctx)   // 注册 approval.Approver("acp-client")
 ACP 的文件/终端回调应在控制层实现“按会话路由”，不能直接复用全局 `seam/fs`/`seam/shell`
 链；这是一期最大的设计风险，也是下一步。
 
+### 宿主入口：ada acp
+
+```powershell
+ada acp --preset examples/acp/acp.preset.json
+```
+
+`platform/host/cli` 的 `cmdACP` 只做宿主该做的事：装配 preset、取 `control` 服务、
+用 stdin/stdout 构造 `jsonrpc2` 连接、交给 `control-acp`。stdout 只写协议消息，
+日志与装配警告一律走 stderr（否则会污染 JSON-RPC 行）。
+
+示例 preset 在 `examples/acp/`：llm-replay + session-memory + agent-loop +
+agent-control + tool-helper，不依赖网络与磁盘会话；回放里带一次 `tool_find` 调用，
+端到端测试同时验证 `agent_message_chunk`、`tool_call`、`tool_call_update` 三种 update。
+它要求 preset 显式启用 `agent-control`——**CLI 不会偷偷加插件**，产品差异仍然只来自 preset。
+
 ## 7. 迁移顺序
 
 1. 控制契约 + Go/TS 实现通路（已完成；Go 由 `core/agent-control`，TS 由 bridge 包装）；
@@ -173,7 +207,8 @@ ACP 的文件/终端回调应在控制层实现“按会话路由”，不能直
 3. `provider/control-rpc`，把现有 v1 消费者切到控制层（适配器 + 真实 rpc-json/tcp 端到端已完成，消费者迁移待做）；
 4. `provider/control-acp` 最小聊天闭环（已完成）；
 5. 权限（已完成）：`session/request_permission` ↔ `approval.Approver`；
-6. 再补文件、终端、MCP 与会话级路由。
+6. 宿主入口（已完成）：`ada acp` + `examples/acp`；
+7. 再补文件、终端、MCP 与会话级路由。
 
 ## 8. 验证
 
@@ -181,6 +216,7 @@ ACP 的文件/终端回调应在控制层实现“按会话路由”，不能直
 go test ./plugins/seam/control ./plugins/provider/control-rpc ./plugins/provider/control-acp
 go test -race ./plugins/seam/control ./plugins/provider/control-rpc ./plugins/provider/control-acp ./plugins/core/agent-control
 go test -run TestControlOverRPCJSON -v ./plugins/provider/control-rpc
+go test -run TestACPServe -v ./platform/host/cli
 ```
 
 Go 与 TS 的契约测试应共享同一组 JSON fixture；任何新增方法必须同时更新

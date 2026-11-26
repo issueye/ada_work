@@ -223,6 +223,10 @@ func (c *Conn) Close() error {
 	return nil
 }
 
+// Done 在连接关闭(对端断开、读写失败或显式 Close)后关闭,
+// 供宿主等待一次会话结束。
+func (c *Conn) Done() <-chan struct{} { return c.done }
+
 func (c *Conn) errOrClosed() error {
 	c.errMu.Lock()
 	defer c.errMu.Unlock()

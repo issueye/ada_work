@@ -2,14 +2,18 @@ package cli_test
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/issueye/ada_go_v2/platform/host/cli"
 	"github.com/issueye/ada_go_v2/platform/install"
@@ -1048,5 +1052,185 @@ func TestPlanSkillHelperExample(t *testing.T) {
 	}
 	if !strings.Contains(out, "skill-helper") || !strings.Contains(out, "结果: 可装配") {
 		t.Fatalf("skill preset 输出不正确:\n%s", out)
+	}
+}
+
+// lockedBuffer 让测试可以在命令仍在写 stderr 时安全读取。
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func waitACP(t *testing.T, lines <-chan map[string]json.RawMessage, pred func(map[string]json.RawMessage) bool) map[string]json.RawMessage {
+	t.Helper()
+	deadline := time.After(15 * time.Second)
+	for {
+		select {
+		case m, ok := <-lines:
+			if !ok {
+				t.Fatal("ACP 输出提前结束")
+			}
+			if pred(m) {
+				return m
+			}
+		case <-deadline:
+			t.Fatal("等待 ACP 消息超时")
+		}
+	}
+}
+
+func acpResponseID(m map[string]json.RawMessage, id int) bool {
+	var got int
+	return json.Unmarshal(m["id"], &got) == nil && got == id
+}
+
+// TestACPServe 以子进程等价方式跑一次真实 ACP 会话:
+// initialize → session/new → session/prompt,并断言流式 session/update。
+func TestACPServe(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir("../../.."); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(cwd) }()
+
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	errOut := &lockedBuffer{}
+	done := make(chan int, 1)
+	t.Cleanup(func() {
+		_ = inW.Close()
+		_ = outR.Close()
+	})
+	go func() {
+		code := cli.RunWithIO([]string{"acp", "--preset", "examples/acp/acp.preset.json"}, inR, outW, errOut)
+		_ = outW.Close()
+		done <- code
+	}()
+
+	lines := make(chan map[string]json.RawMessage, 64)
+	go func() {
+		sc := bufio.NewScanner(outR)
+		sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+		for sc.Scan() {
+			var m map[string]json.RawMessage
+			if json.Unmarshal(sc.Bytes(), &m) == nil {
+				lines <- m
+			}
+		}
+		close(lines)
+	}()
+
+	send := func(id int, method string, params any) {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0", "id": id, "method": method, "params": params,
+		})
+		if _, err := io.WriteString(inW, string(body)+"\n"); err != nil {
+			t.Fatalf("写入请求失败: %v", err)
+		}
+	}
+
+	send(1, "initialize", map[string]any{"protocolVersion": 1})
+	init := waitACP(t, lines, func(m map[string]json.RawMessage) bool { return acpResponseID(m, 1) })
+	if !strings.Contains(string(init["result"]), `"protocolVersion":1`) {
+		t.Fatalf("initialize 结果不符: %s", init["result"])
+	}
+
+	send(2, "session/new", map[string]any{"cwd": "/workspace"})
+	created := waitACP(t, lines, func(m map[string]json.RawMessage) bool { return acpResponseID(m, 2) })
+	var session struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(created["result"], &session); err != nil || session.SessionID == "" {
+		t.Fatalf("session/new 结果不符: %s err=%v", created["result"], err)
+	}
+
+	send(3, "session/prompt", map[string]any{
+		"sessionId": session.SessionID,
+		"prompt":    []map[string]string{{"type": "text", "text": "你好"}},
+	})
+
+	var promptDone, sawToolCall, sawToolResult bool
+	var chunks []string
+	deadline := time.After(20 * time.Second)
+	for !promptDone || !sawToolCall || !sawToolResult ||
+		!strings.Contains(strings.Join(chunks, ""), "你好，我是 ACP agent。") {
+		select {
+		case m, ok := <-lines:
+			if !ok {
+				t.Fatalf("ACP 输出提前结束,stderr=%s", errOut.String())
+			}
+			if acpResponseID(m, 3) {
+				promptDone = true
+				if !strings.Contains(string(m["result"]), `"stopReason":"end_turn"`) {
+					t.Fatalf("session/prompt 结果不符: %s", m["result"])
+				}
+			}
+			var method string
+			_ = json.Unmarshal(m["method"], &method)
+			if method != "session/update" {
+				continue
+			}
+			var p struct {
+				Update map[string]any `json:"update"`
+			}
+			if err := json.Unmarshal(m["params"], &p); err != nil {
+				t.Fatalf("session/update 参数非法: %v", err)
+			}
+			switch p.Update["sessionUpdate"] {
+			case "agent_message_chunk":
+				if content, ok := p.Update["content"].(map[string]any); ok {
+					if text, _ := content["text"].(string); text != "" {
+						chunks = append(chunks, text)
+					}
+				}
+			case "tool_call":
+				sawToolCall = true
+				if p.Update["toolCallId"] != "call-1" || p.Update["title"] != "tool_find" ||
+					p.Update["kind"] != "search" || p.Update["status"] != "in_progress" {
+					t.Fatalf("tool_call 映射不符: %+v", p.Update)
+				}
+			case "tool_call_update":
+				sawToolResult = true
+				if p.Update["toolCallId"] != "call-1" || p.Update["status"] != "completed" {
+					t.Fatalf("tool_call_update 映射不符: %+v", p.Update)
+				}
+			}
+		case <-deadline:
+			t.Fatalf("等待 prompt 完成超时(chunks=%q tool=%v/%v),stderr=%s",
+				strings.Join(chunks, ""), sawToolCall, sawToolResult, errOut.String())
+		}
+	}
+	joined := strings.Join(chunks, "")
+	if !strings.Contains(joined, "我先查一下工具") || !strings.Contains(joined, "你好，我是 ACP agent。") {
+		t.Fatalf("assistant 文本未正确映射: %q", joined)
+	}
+	if strings.Contains(joined, `"message"`) {
+		t.Fatalf("assistant 文本不应是原始 JSON: %q", joined)
+	}
+
+	_ = inW.Close()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("acp 退出码 %d,stderr=%s", code, errOut.String())
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatalf("acp 没有退出,stderr=%s", errOut.String())
 	}
 }
