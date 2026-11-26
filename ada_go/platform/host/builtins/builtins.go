@@ -8,6 +8,7 @@ import (
 	"github.com/issueye/ada_go_v2/platform/caps"
 	"github.com/issueye/ada_go_v2/platform/kernel"
 	"github.com/issueye/ada_go_v2/platform/plugin"
+	controlgo "github.com/issueye/ada_go_v2/plugins/core/agent-control"
 	agentloop "github.com/issueye/ada_go_v2/plugins/core/agent-loop"
 	compaction "github.com/issueye/ada_go_v2/plugins/core/compaction-basic"
 	sessionstats "github.com/issueye/ada_go_v2/plugins/core/session-stats"
@@ -70,6 +71,7 @@ func Plugins() map[string]func() kernel.Plugin {
 		"system-prompt":    systemprompt.Plugin,
 		"seam-tools":       seamtools.Plugin,
 		"agent-loop":       agentloop.Plugin,
+		"agent-control":    controlgo.Plugin,
 		"session-stats":    sessionstats.Plugin,
 		"compaction-basic": compaction.Plugin,
 		"approval-gate":    approvalgate.Plugin,

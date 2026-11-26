@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/issueye/ada_go_v2/platform/kernel"
+	seamagent "github.com/issueye/ada_go_v2/plugins/seam/agent"
 	"github.com/issueye/ada_go_v2/plugins/seam/llm"
 	"github.com/issueye/ada_go_v2/plugins/seam/prompts"
 	"github.com/issueye/ada_go_v2/plugins/seam/seamerr"
@@ -52,6 +53,21 @@ type TurnResult struct {
 	ToolCalls int       `json:"toolCalls"`
 	Usage     llm.Usage `json:"usage"`
 }
+
+// seamRunner 把 Agent 适配成 seam/agent.Runner,供控制层使用。
+type seamRunner struct{ *Agent }
+
+func (r seamRunner) Run(ctx context.Context, sess session.Session, userText string) (seamagent.Result, error) {
+	res, err := r.Agent.Run(ctx, sess, userText)
+	if err != nil {
+		return seamagent.Result{}, err
+	}
+	return seamagent.Result{
+		TurnID: res.TurnID, Text: res.Text, Steps: res.Steps, ToolCalls: res.ToolCalls,
+	}, nil
+}
+
+var _ seamagent.Runner = seamRunner{}
 
 // Open 创建一个新会话。
 func (a *Agent) Open(ctx context.Context, meta session.Meta) (session.Session, error) {
@@ -478,7 +494,10 @@ func Plugin() kernel.Plugin {
 			return nil, kernel.Fail(kernel.CodeInvalid, "agent-loop: 解析配置失败: %v", err)
 		}
 		agent := &Agent{bus: ctx, sessions: reg, prompts: pr, llms: lm, tools: tl, conf: conf}
-		_, err = ctx.Provide("agent", agent, kernel.WithVersion(1), kernel.WithKind("object"))
+		if _, err := ctx.Provide("agent", agent, kernel.WithVersion(1), kernel.WithKind("object")); err != nil {
+			return nil, err
+		}
+		_, err = ctx.Provide("agent.runner", seamRunner{Agent: agent}, kernel.WithVersion(1), kernel.WithKind("object"))
 		return nil, err
-	}).WithInject("session", "prompts", "llm", "tools").WithProvide("agent")
+	}).WithInject("session", "prompts", "llm", "tools").WithProvide("agent", "agent.runner")
 }

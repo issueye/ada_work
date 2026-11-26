@@ -112,6 +112,7 @@ v2 把「插件」从**被调用的函数袋**升级成**可编排的作用域�
 | [adr/0015](docs/adr/0015-refused-node-modules.md) | ADR:不实现 worker_threads / inspector / async_hooks / trace_events(复议 2027-06-30) |
 | [adr/0016](docs/adr/0016-no-fs-watch.md) | ADR:fs.watch/watchFile 的实现边界(已修订 2026-11-26,LoopResident 下轮询;复议 2027-06-30) |
 | [seam-rpc.md](docs/seam-rpc.md) | RPC 通讯:P0–P4(TLS) 已实现(tcp/unix/pipe、帧/握手/取消、rpc-guard/observe、tls://) |
+| [rpc-control-layers.md](docs/rpc-control-layers.md) | 五层控制架构:控制契约、Go/TS 双实现通路、RPC/ACP 适配方向 |
 | [node-compat.md](docs/node-compat.md) | Node 内置模块兼容层:node:fs/path/os/events/util 等 |
 | [seam-secrets.md](docs/seam-secrets.md) | M5 secret 能力:seam/secrets 与 provider/secrets-env |
 | [seam-session.md](docs/seam-session.md) | seam/session 与 session-memory |

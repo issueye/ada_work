@@ -11,7 +11,7 @@ import (
 func TestBuiltinGoPlugins(t *testing.T) {
 	got := builtins.Plugins()
 	for _, id := range []string{"seam-fs", "fs-local", "caps-static", "caps-gate", "shell-local", "seam-approval",
-		"seam-llm", "llm-replay", "llm-openai", "seam-prompts", "system-prompt", "seam-tools", "agent-loop", "session-stats", "compaction-basic", "approval-gate", "audit-log", "llm-retry", "tool-timeout", "session-jsonl",
+		"seam-llm", "llm-replay", "llm-openai", "seam-prompts", "system-prompt", "seam-tools", "agent-loop", "agent-control", "session-stats", "compaction-basic", "approval-gate", "audit-log", "llm-retry", "tool-timeout", "session-jsonl",
 		"seam-rpc", "rpc-json", "rpc-net", "rpc-pipe",
 		"seam-secrets", "secrets-env", "secrets-guard",
 		"rpc-tls", "rpc-guard", "rpc-observe",

@@ -23,6 +23,7 @@ import (
 	"github.com/MoeForge/moejs"
 	"github.com/issueye/ada_go_v2/platform/kernel"
 	"github.com/issueye/ada_go_v2/platform/kernel/schema"
+	"github.com/issueye/ada_go_v2/plugins/seam/control"
 	seamfs "github.com/issueye/ada_go_v2/plugins/seam/fs"
 	"github.com/issueye/ada_go_v2/plugins/seam/llm"
 	seamsecrets "github.com/issueye/ada_go_v2/plugins/seam/secrets"
@@ -602,7 +603,17 @@ export function has(name) { try { get(name); return true } catch (_err) { return
 		})
 	}
 	for _, req := range provides {
-		if _, perr := ctx.Provide(req.name, req.value); perr != nil {
+		value := any(req.value)
+		if req.name == control.ServiceName {
+			wrapped, werr := wrapControlService(req.value)
+			if werr != nil {
+				runEffects(p.opts.Name, effects, context.Background())
+				_ = rt.Close(context.Background())
+				return nil, kernel.Wrap(kernel.CodeInvalid, werr, "JS 插件 %s 提供 control 服务失败", p.opts.Name)
+			}
+			value = wrapped
+		}
+		if _, perr := ctx.Provide(req.name, value); perr != nil {
 			runEffects(p.opts.Name, effects, context.Background())
 			_ = rt.Close(context.Background())
 			return nil, kernel.Wrap(kernel.CodeInvalid, perr, "JS 插件 %s 提供服务 %q 失败", p.opts.Name, req.name)

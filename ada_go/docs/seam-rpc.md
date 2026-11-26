@@ -2,6 +2,8 @@
 
 > 状态:**P0–P3 已实现,P4 TLS 已实现(2026-11-20);`SO_PEERCRED` 待做,桌面接入原型已落地(`cmd/ada-rpc-agent`)**。已落地:`plugins/seam/rpc`(契约)、`plugins/provider/rpc-json`(帧/握手/调用/事件/取消)、`plugins/provider/rpc-net`(tcp/unix)、`plugins/provider/rpc-pipe`(Windows 命名管道,overlapped 流)、`plugins/policy/rpc-guard`(授权/地址/方法/对端/鉴权)、`plugins/policy/rpc-observe`(`rpc/observe`)、`plugins/provider/rpc-tls`(`tls://`)、`cmd/ada-rpc-agent`(把 agent preset 做成每机器人一个进程的 RPC 宿主)。
 >
+> 五层控制架构(RPC/ACP)见 [rpc-control-layers.md](rpc-control-layers.md)。
+>
 > 关联:[plugin-kernel-design.md](plugin-kernel-design.md)(§2 原则、§13 安全)、[seam-api.md](seam-api.md) §1.2(错误码)、[caps.md](caps.md)、[host-server.md](host-server.md)、[ADR 0008](adr/0008-desktop-webview-shell.md)、[ADR 0009](adr/0009-rpc-json-budget.md)、AGENTS §2–§5。
 
 ## 0. 结论摘要
