@@ -1,0 +1,7 @@
+{
+  "id": "acp-helper",
+  "name": "ACP client tools",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {"required": ["tools", "acp"]}
+}

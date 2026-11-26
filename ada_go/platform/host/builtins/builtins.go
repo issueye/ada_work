@@ -56,6 +56,7 @@ import (
 	seamshell "github.com/issueye/ada_go_v2/plugins/seam/shell"
 	seamtools "github.com/issueye/ada_go_v2/plugins/seam/tools"
 	seamworkspace "github.com/issueye/ada_go_v2/plugins/seam/workspace"
+	acphelper "github.com/issueye/ada_go_v2/plugins/tool/acp-helper"
 	toolhelper "github.com/issueye/ada_go_v2/plugins/tool/tool-helper"
 	toolworkspace "github.com/issueye/ada_go_v2/plugins/tool/workspace-helper"
 )
@@ -88,6 +89,7 @@ func Plugins() map[string]func() kernel.Plugin {
 		"workspace-guard":  workspaceguard.Plugin,
 		"workspace-helper": toolworkspace.Plugin,
 		"tool-helper":      toolhelper.Plugin,
+		"acp-helper":       acphelper.Plugin,
 		"seam-shell":       seamshell.Plugin,
 		"shell-local":      shelllocal.Plugin,
 		"shell-guard":      shellguard.Plugin,

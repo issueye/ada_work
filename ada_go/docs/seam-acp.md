@@ -81,6 +81,7 @@ type Client interface {
 | `plugins/seam/acp` | ✅ 契约 + `Registry` + 插件 |
 | `control-acp` 实现 | ✅ capability 记录 + 7 个反向方法 |
 | `ada acp` 绑定 | ✅ 有 `acp` 服务时 `Registry.Set(endpoint)`，退出时解绑 |
+| `tool/acp-helper` | ✅ 消费 `acp` 服务：`acp_read_file` / `acp_write_file` / `acp_run` |
 | 单元测试 | ✅ 能力门禁、参数映射、terminal 全流程、Registry 生命周期 |
 
 ## 6. 安全边界

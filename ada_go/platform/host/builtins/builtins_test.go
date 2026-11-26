@@ -10,12 +10,17 @@ import (
 // 内置 Go 插件注册表包含安全栈关键 id。
 func TestBuiltinGoPlugins(t *testing.T) {
 	got := builtins.Plugins()
-	for _, id := range []string{"seam-fs", "seam-acp", "fs-local", "caps-static", "caps-gate", "shell-local", "seam-approval",
-		"seam-llm", "llm-replay", "llm-openai", "seam-prompts", "system-prompt", "seam-tools", "agent-loop", "agent-control", "session-stats", "compaction-basic", "approval-gate", "audit-log", "llm-retry", "tool-timeout", "session-jsonl",
+	for _, id := range []string{
+		"seam-fs", "seam-acp", "fs-local", "caps-static", "caps-gate", "shell-local", "seam-approval",
+		"seam-llm", "llm-replay", "llm-openai", "seam-prompts", "system-prompt", "seam-tools",
+		"agent-loop", "agent-control", "session-stats", "compaction-basic", "approval-gate",
+		"audit-log", "llm-retry", "tool-timeout", "session-jsonl",
 		"seam-rpc", "rpc-json", "rpc-net", "rpc-pipe",
 		"seam-secrets", "secrets-env", "secrets-guard",
 		"rpc-tls", "rpc-guard", "rpc-observe",
-		"seam-workspace", "workspace-local", "workspace-guard", "workspace-helper", "tool-helper"} {
+		"seam-workspace", "workspace-local", "workspace-guard", "workspace-helper",
+		"tool-helper", "acp-helper",
+	} {
 		if _, ok := got[id]; !ok {
 			t.Fatalf("内置注册表缺少 %q", id)
 		}
