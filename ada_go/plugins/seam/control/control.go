@@ -28,6 +28,7 @@ const (
 	MethodSessionLoad       = "session.load"
 	MethodSessionList       = "session.list"
 	MethodSessionPrompt     = "session.prompt"
+	MethodSessionHistory    = "session.history"
 	MethodSessionCancel     = "session.cancel"
 	MethodSessionPermission = "session.permission"
 	MethodSessionClose      = "session.close"
@@ -188,6 +189,21 @@ func (c *Client) Prompt(ctx context.Context, req PromptRequest) (TurnResult, err
 		return TurnResult{}, Invalid("session.prompt 结果非法: " + err.Error())
 	}
 	return result, nil
+}
+
+// History 返回会话历史更新(按 seq 升序),供 ACP session/load 等场景回放。
+//
+// 返回的是控制层更新而不是具体协议消息;适配器负责再映射。
+func (c *Client) History(ctx context.Context, sessionID string) ([]Update, error) {
+	out, err := c.invoke(ctx, MethodSessionHistory, map[string]string{"sessionId": sessionID})
+	if err != nil {
+		return nil, err
+	}
+	var list []Update
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, Invalid("session.history 结果非法: " + err.Error())
+	}
+	return list, nil
 }
 
 func (c *Client) Cancel(ctx context.Context, sessionID string) error {

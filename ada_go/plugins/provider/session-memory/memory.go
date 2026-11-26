@@ -71,6 +71,23 @@ func (p *Provider) Sessions() int {
 	return len(p.sessions)
 }
 
+// OpenID 是按 id 恢复会话的 provider 扩展(session.Resumer)。
+//
+// 内存 provider 不持久化:只认识本进程里仍打开的会话;未知 id 返回错误,
+// 不静默创建新会话。
+func (p *Provider) OpenID(ctx context.Context, id string, _ session.Meta) (session.Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, seamerr.Wrap(seamerr.ErrCanceled, ProviderName, "打开会话前已取消", err)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s, ok := p.sessions[id]
+	if !ok {
+		return nil, seamerr.New(seamerr.ErrInvalid, ProviderName, "会话不存在: "+id, false)
+	}
+	return s, nil
+}
+
 type memorySession struct {
 	owner       *Provider
 	id          string

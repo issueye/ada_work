@@ -157,11 +157,6 @@ func validClient(name string) bool {
 	return true
 }
 
-// validID 校验请求 id:非空且 ≤128 字节。
-func validID(id string) bool {
-	return id != "" && len(id) <= 128
-}
-
 func validMethod(name string) bool {
 	if name == "" || len(name) > 128 {
 		return false

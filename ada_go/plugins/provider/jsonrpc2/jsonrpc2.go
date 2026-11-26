@@ -327,6 +327,11 @@ func (c *Conn) dispatch(msg Message, reply bool) {
 		if merr != nil {
 			resp.Error = &Error{Code: CodeInternalError, Message: "结果编码失败"}
 		} else {
+			if b == nil {
+				// 成功但无返回值:必须显式写 "result": null,
+				// 否则响应既不是 result 也不是 error,对端会判为非法消息。
+				b = json.RawMessage("null")
+			}
 			resp.Result = b
 		}
 	}

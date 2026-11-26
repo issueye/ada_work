@@ -74,6 +74,26 @@ func (a *Agent) Open(ctx context.Context, meta session.Meta) (session.Session, e
 	return a.sessions.Open(ctx, "", meta)
 }
 
+// Resume 按 id 恢复既有会话(seam/agent.Resumer)。
+//
+// 它要求默认 session provider 实现 session.Resumer(如 session-jsonl 的 OpenID);
+// 否则返回 EUNIMPLEMENTED,由调用方决定是否降级,不静默新建会话。
+func (a *Agent) Resume(ctx context.Context, id string) (session.Session, error) {
+	if id == "" {
+		return nil, seamerr.New(seamerr.ErrInvalid, PluginName, "恢复会话需要 id", false)
+	}
+	p, err := a.sessions.Provider("")
+	if err != nil {
+		return nil, err
+	}
+	r, ok := p.(session.Resumer)
+	if !ok {
+		return nil, seamerr.New(seamerr.ErrUnimplemented, PluginName,
+			"session provider 不支持按 id 恢复: "+p.Name(), false)
+	}
+	return r.OpenID(ctx, id, session.Meta{})
+}
+
 // Run 跑一轮:append user → assemble → stream → tools → append turn/end。
 func (a *Agent) Run(ctx context.Context, sess session.Session, userText string) (TurnResult, error) {
 	if sess == nil {

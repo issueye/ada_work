@@ -131,3 +131,17 @@ func TestDone(t *testing.T) {
 		t.Fatal("Close 后 Done 应关闭")
 	}
 }
+
+func TestNullResult(t *testing.T) {
+	a, b := pipePair(t)
+	b.Handle("nothing", func(context.Context, json.RawMessage) (any, error) { return nil, nil })
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var out any
+	if err := a.Call(ctx, "nothing", nil, &out); err != nil {
+		t.Fatalf("null 结果调用失败: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("null 结果应解码为 nil: %+v", out)
+	}
+}

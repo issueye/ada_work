@@ -96,3 +96,19 @@ func TestRegistryWithoutProvider(t *testing.T) {
 		t.Fatalf("无 provider 时应返回错误")
 	}
 }
+
+// OpenID 是按 id 恢复的 provider 扩展:认识已存在的会话,未知 id 报错。
+func TestOpenID(t *testing.T) {
+	p := memory.New()
+	s, err := p.Open(context.Background(), session.Meta{Title: "resume"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.OpenID(context.Background(), s.ID(), session.Meta{})
+	if err != nil || got.ID() != s.ID() {
+		t.Fatalf("OpenID 应返回同一会话: %v err=%v", got, err)
+	}
+	if _, err := p.OpenID(context.Background(), "mem-missing", session.Meta{}); err == nil {
+		t.Fatal("未知 id 应返回错误")
+	}
+}

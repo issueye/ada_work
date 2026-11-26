@@ -54,11 +54,13 @@ func (s *Service) Invoke(ctx context.Context, method string, params json.RawMess
 	case control.MethodSessionCreate:
 		return s.create(ctx, params)
 	case control.MethodSessionLoad:
-		return s.load(params)
+		return s.load(ctx, params)
 	case control.MethodSessionList:
 		return s.list()
 	case control.MethodSessionPrompt:
 		return s.prompt(ctx, params)
+	case control.MethodSessionHistory:
+		return s.history(params)
 	case control.MethodSessionCancel:
 		return s.cancel(params)
 	case control.MethodSessionPermission:
@@ -90,7 +92,7 @@ func (s *Service) create(ctx context.Context, raw json.RawMessage) (json.RawMess
 	return json.Marshal(s.info(sess.ID(), m))
 }
 
-func (s *Service) load(raw json.RawMessage) (json.RawMessage, error) {
+func (s *Service) load(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 	var req struct {
 		SessionID string `json:"sessionId"`
 	}
@@ -101,9 +103,61 @@ func (s *Service) load(raw json.RawMessage) (json.RawMessage, error) {
 	m := s.sessions[req.SessionID]
 	s.mu.Unlock()
 	if m == nil {
-		return nil, control.Invalid("会话不存在: " + req.SessionID)
+		// 内存表里没有时尝试让 runner 按 id 恢复;恢复失败保持「会话不存在」。
+		m = s.resume(ctx, req.SessionID)
+		if m == nil {
+			return nil, control.Invalid("会话不存在: " + req.SessionID)
+		}
 	}
 	return json.Marshal(s.info(req.SessionID, m))
+}
+
+// resume 让 runner 按 id 恢复会话并登记;不实现 Resumer 或恢复失败都返回 nil。
+func (s *Service) resume(ctx context.Context, id string) *managed {
+	r, ok := s.runner.(seamagent.Resumer)
+	if !ok {
+		return nil
+	}
+	sess, err := r.Resume(ctx, id)
+	if err != nil {
+		return nil
+	}
+	now := time.Now()
+	m := &managed{sess: sess, createdAt: now, updatedAt: now}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.sessions[id]; ok {
+		return existing
+	}
+	s.sessions[id] = m
+	return m
+}
+
+// history 返回会话的既有事件,投影成控制层更新;顺序与存储一致。
+func (s *Service) history(raw json.RawMessage) (json.RawMessage, error) {
+	var req struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil || req.SessionID == "" {
+		return nil, control.Invalid("session.history 需要 sessionId")
+	}
+	s.mu.Lock()
+	m := s.sessions[req.SessionID]
+	s.mu.Unlock()
+	if m == nil || m.sess == nil {
+		return nil, control.Invalid("会话不存在: " + req.SessionID)
+	}
+	events, err := m.sess.Events(0, 0)
+	if err != nil {
+		return nil, control.Unavailable("读取会话历史失败: " + err.Error())
+	}
+	out := make([]control.Update, 0, len(events))
+	for _, ev := range events {
+		out = append(out, control.Update{
+			SessionID: req.SessionID, TurnID: ev.TurnID, Kind: ev.Type, Data: ev.Data,
+		})
+	}
+	return json.Marshal(out)
 }
 
 func (s *Service) list() (json.RawMessage, error) {

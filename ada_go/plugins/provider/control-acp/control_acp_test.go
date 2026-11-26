@@ -34,6 +34,12 @@ func (f *fakeControl) Invoke(_ context.Context, method string, params json.RawMe
 		_ = json.Unmarshal(params, &req)
 		f.prompt = req.Text
 		return json.RawMessage(`{"id":"t1","stopReason":"end_turn"}`), nil
+	case control.MethodSessionHistory:
+		return json.RawMessage(`[
+			{"sessionId":"s1","kind":"user/message","data":{"role":"user","content":[{"kind":"text","text":"问题"}]}},
+			{"sessionId":"s1","kind":"turn/start","data":{}},
+			{"sessionId":"s1","kind":"assistant/message","data":{"message":{"content":[{"kind":"text","text":"回答"}]}}}
+		]`), nil
 	case control.MethodSessionCancel:
 		return json.RawMessage(`{}`), nil
 	default:
@@ -343,5 +349,54 @@ func TestACPToolUpdates(t *testing.T) {
 	failed := waitUpdate(t, notifications, ctx)
 	if failed["status"] != "failed" {
 		t.Fatalf("失败状态应映射为 failed: %+v", failed)
+	}
+}
+
+func TestACPLoadReplaysHistory(t *testing.T) {
+	a, b := net.Pipe()
+	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	notifications := make(chan jsonrpc2.Message, 8)
+	client := jsonrpc2.New(ctx, a, jsonrpc2.WithNotificationHandler(func(m jsonrpc2.Message) {
+		notifications <- m
+	}))
+	t.Cleanup(func() { _ = client.Close() })
+	server := jsonrpc2.New(ctx, b)
+	ep := controlacp.New(server, control.New(&fakeControl{}))
+	t.Cleanup(func() { _ = ep.Close() })
+
+	var res any
+	if err := client.Call(ctx, "session/load", map[string]any{"sessionId": "s1"}, &res); err != nil {
+		t.Fatalf("session/load 失败: %v", err)
+	}
+	if res != nil {
+		t.Fatalf("session/load 应返回 null: %+v", res)
+	}
+	var kinds, texts []string
+	for i := 0; i < 2; i++ {
+		msg := <-notifications
+		var p struct {
+			Update struct {
+				SessionUpdate string `json:"sessionUpdate"`
+				Content       struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"update"`
+		}
+		if err := json.Unmarshal(msg.Params, &p); err != nil {
+			t.Fatalf("通知参数非法: %v", err)
+		}
+		kinds = append(kinds, p.Update.SessionUpdate)
+		texts = append(texts, p.Update.Content.Text)
+	}
+	if kinds[0] != "user_message_chunk" || texts[0] != "问题" {
+		t.Fatalf("user 回放不符: %v %v", kinds, texts)
+	}
+	if kinds[1] != "agent_message_chunk" || texts[1] != "回答" {
+		t.Fatalf("assistant 回放不符: %v %v", kinds, texts)
+	}
+	if len(notifications) != 0 {
+		t.Fatalf("控制面事件不应回放,多出 %d 条", len(notifications))
 	}
 }

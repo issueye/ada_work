@@ -47,6 +47,7 @@ func Methods() []string {
 		control.MethodSessionLoad,
 		control.MethodSessionList,
 		control.MethodSessionPrompt,
+		control.MethodSessionHistory,
 		control.MethodSessionCancel,
 		control.MethodSessionPermission,
 		control.MethodSessionClose,

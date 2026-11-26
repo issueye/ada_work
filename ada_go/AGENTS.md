@@ -75,6 +75,7 @@
 | [seam-api-security.md](docs/seam-api-security.md) | 安全 seam 契约：sandbox / fs / shell |
 | [seam-rpc.md](docs/seam-rpc.md) | RPC 通讯:seam/rpc + rpc-json/net/pipe/tls + rpc-guard/observe(P0–P4 TLS) |
 | [rpc-control-layers.md](docs/rpc-control-layers.md) | RPC/ACP 五层控制架构:control 契约、Go/TS 实现、control-rpc/control-acp、`ada acp` |
+| [seam-acp.md](docs/seam-acp.md) | ACP client 反向能力:fs/read_text_file、fs/write_text_file、terminal/* |
 | [ui-framework.md](docs/ui-framework.md) | 提案:无 Node 的插件化 SPA(未实现) |
 | [kernel-api.md](docs/kernel-api.md) | M1 冻结的内核 API 与已知边界 |
 | [spikes.md](docs/spikes.md) | M0 验证报告（5 个已通过，7 个待做） |

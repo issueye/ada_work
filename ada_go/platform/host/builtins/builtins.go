@@ -44,6 +44,7 @@ import (
 	memory "github.com/issueye/ada_go_v2/plugins/provider/session-memory"
 	shelllocal "github.com/issueye/ada_go_v2/plugins/provider/shell-local"
 	workspacelocal "github.com/issueye/ada_go_v2/plugins/provider/workspace-local"
+	seamacp "github.com/issueye/ada_go_v2/plugins/seam/acp"
 	seamapproval "github.com/issueye/ada_go_v2/plugins/seam/approval"
 	seamfs "github.com/issueye/ada_go_v2/plugins/seam/fs"
 	seamllm "github.com/issueye/ada_go_v2/plugins/seam/llm"
@@ -78,6 +79,7 @@ func Plugins() map[string]func() kernel.Plugin {
 		"audit-log":        auditlog.Plugin,
 		"llm-retry":        llmretry.Plugin,
 		"tool-timeout":     tooltimeout.Plugin,
+		"seam-acp":         seamacp.Plugin,
 		"seam-fs":          seamfs.Plugin,
 		"fs-local":         fslocal.Plugin,
 		"fs-sandbox":       fssandbox.Plugin,

@@ -119,6 +119,14 @@ type Provider interface {
 	Open(ctx context.Context, meta Meta) (Session, error)
 }
 
+// Resumer 是 provider 的可选扩展:按既有 id 打开会话。
+//
+// 它是扩展而非 Registry 方法:只有能持久化或索引会话的 provider 才实现它。
+// id 不存在时返回错误,不静默创建新会话——否则「恢复」会变成「悄悄换一个」。
+type Resumer interface {
+	OpenID(ctx context.Context, id string, meta Meta) (Session, error)
+}
+
 // Registry 是 seam 插件提供的服务值:provider 向它注册,消费者从它选择。
 //
 // 选择规则与注册顺序无关:默认取名字排序后的第一个 provider。

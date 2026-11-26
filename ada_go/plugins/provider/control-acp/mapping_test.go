@@ -7,7 +7,7 @@ import (
 	"github.com/issueye/ada_go_v2/plugins/seam/control"
 )
 
-func TestAssistantText(t *testing.T) {
+func TestMessageText(t *testing.T) {
 	cases := []struct {
 		name  string
 		data  string
@@ -53,9 +53,9 @@ func TestAssistantText(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, known := assistantText(json.RawMessage(c.data))
+			got, known := messageText(json.RawMessage(c.data))
 			if got != c.want || known != c.known {
-				t.Fatalf("assistantText = (%q,%v),期望 (%q,%v)", got, known, c.want, c.known)
+				t.Fatalf("messageText = (%q,%v),期望 (%q,%v)", got, known, c.want, c.known)
 			}
 		})
 	}
@@ -105,5 +105,27 @@ func TestToolStatus(t *testing.T) {
 		if got := toolStatus(in); got != want {
 			t.Fatalf("toolStatus(%q) = %q,期望 %q", in, got, want)
 		}
+	}
+}
+
+func TestReplayUpdateParams(t *testing.T) {
+	user := replayUpdateParams(control.Update{
+		SessionID: "s1", Kind: "user/message",
+		Data: json.RawMessage(`{"role":"user","content":[{"kind":"text","text":"问题"}]}`),
+	})
+	if user == nil {
+		t.Fatal("回放应把 user/message 映射成 user_message_chunk")
+	}
+	update := user["update"].(map[string]any)
+	if update["sessionUpdate"] != "user_message_chunk" {
+		t.Fatalf("user 更新类型不符: %+v", update)
+	}
+	// 实时转发不回显用户消息。
+	if sessionUpdateParams(control.Update{SessionID: "s1", Kind: "user/message"}) != nil {
+		t.Fatal("实时转发不应回显 user/message")
+	}
+	// 控制面事件没有 ACP 等价物,应跳过。
+	if sessionUpdateParams(control.Update{SessionID: "s1", Kind: "turn/start"}) != nil {
+		t.Fatal("turn/start 不应发给 ACP")
 	}
 }

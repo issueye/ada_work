@@ -3,6 +3,7 @@ package controlgo_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -340,5 +341,79 @@ func TestGoControlCancelReturnsCancelled(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("取消后 prompt 没有返回")
+	}
+}
+
+// resumableRunner 模拟支持 session.Resumer 的 agent:按 id 从 registry 恢复会话。
+type resumableRunner struct{ reg *session.Registry }
+
+func (r resumableRunner) Open(ctx context.Context, meta session.Meta) (session.Session, error) {
+	return r.reg.Open(ctx, "", meta)
+}
+
+func (r resumableRunner) Run(_ context.Context, sess session.Session, text string) (seamagent.Result, error) {
+	_, _ = sess.Append(session.Event{Type: session.TypeAssistantMessage, Data: json.RawMessage(`{"text":"resumed:"` + text + `"}`)})
+	return seamagent.Result{TurnID: "t1", Text: "resumed:" + text}, nil
+}
+
+func (r resumableRunner) Resume(ctx context.Context, id string) (session.Session, error) {
+	p, err := r.reg.Provider("")
+	if err != nil {
+		return nil, err
+	}
+	res, ok := p.(session.Resumer)
+	if !ok {
+		return nil, errors.New("provider 不支持 Resumer")
+	}
+	return res.OpenID(ctx, id, session.Meta{})
+}
+
+func TestGoControlLoadResumes(t *testing.T) {
+	app, c := mount(t, func(reg *session.Registry) seamagent.Runner { return resumableRunner{reg: reg} })
+	reg, err := kernel.Service[*session.Registry](app.Root(), "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 会话由 provider 直接创建,控制层内存表里没有它。
+	sess, err := reg.Open(context.Background(), "", session.Meta{Title: "persisted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := c.Load(context.Background(), sess.ID())
+	if err != nil || info.ID != sess.ID() || info.Title != "persisted" {
+		t.Fatalf("load 应恢复既有会话: %+v err=%v", info, err)
+	}
+	turn, err := c.Prompt(context.Background(), control.PromptRequest{SessionID: sess.ID(), Text: "hi"})
+	if err != nil || turn.Text != "resumed:hi" {
+		t.Fatalf("恢复后 prompt 不符: %+v err=%v", turn, err)
+	}
+	if _, err := c.Load(context.Background(), "missing"); err == nil {
+		t.Fatal("未知 id 应失败")
+	}
+}
+
+func TestGoControlHistory(t *testing.T) {
+	_, c := mount(t, func(reg *session.Registry) seamagent.Runner { return fakeRunner{reg: reg} })
+	info, err := c.Create(context.Background(), control.CreateRequest{Title: "history"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Prompt(context.Background(), control.PromptRequest{SessionID: info.ID, Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	history, err := c.History(context.Background(), info.ID)
+	if err != nil || len(history) == 0 {
+		t.Fatalf("history 结果不符: %d err=%v", len(history), err)
+	}
+	if history[len(history)-1].Kind != session.TypeAssistantMessage {
+		t.Fatalf("最后一条应是 assistant/message: %+v", history[len(history)-1])
+	}
+	for _, u := range history {
+		if u.SessionID != info.ID {
+			t.Fatalf("history 混入其它会话: %+v", u)
+		}
+	}
+	if _, err := c.History(context.Background(), "missing"); err == nil {
+		t.Fatal("未知会话的 history 应失败")
 	}
 }

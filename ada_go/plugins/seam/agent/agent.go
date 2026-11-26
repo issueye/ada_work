@@ -39,3 +39,11 @@ type Runner interface {
 	Open(ctx context.Context, meta session.Meta) (session.Session, error)
 	Run(ctx context.Context, sess session.Session, userText string) (Result, error)
 }
+
+// Resumer 是 Runner 的可选扩展:按 id 恢复既有会话。
+//
+// 控制层的 session.load 在内存表里找不到会话时尝试它;不实现就保持
+// 「会话不存在」,不做静默降级。
+type Resumer interface {
+	Resume(ctx context.Context, id string) (session.Session, error)
+}

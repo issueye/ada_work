@@ -51,6 +51,10 @@ type Session interface {
   「后注册覆盖先注册」会让装配顺序决定行为,这是装配层最忌讳的随机性。
 - `Registry.Projections()` 持有投影注册表;provider 实现 `ProjectionBinder` 时,
   `Registry.Register` 会把投影表注入 provider,`Session.Project` 才能工作。
+- `session.Resumer` 是 provider 的可选扩展:按既有 id 打开会话(`OpenID`)。
+  `session-jsonl` 能恢复持久化会话,`session-memory` 只认识本进程仍打开的会话;
+  未知 id 一律报错,不静默新建。控制层 `session.load` 在内存表缺失时经
+  `agent.Resumer` 走这条路径。
 
 ## 2.1 投影(projection)
 

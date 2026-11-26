@@ -19,7 +19,9 @@ import (
 
 	"github.com/issueye/ada_go_v2/platform/kernel"
 	"github.com/issueye/ada_go_v2/plugins/provider/jsonrpc2"
+	acpseam "github.com/issueye/ada_go_v2/plugins/seam/acp"
 	"github.com/issueye/ada_go_v2/plugins/seam/control"
+	"github.com/issueye/ada_go_v2/plugins/seam/seamerr"
 )
 
 // ProtocolVersion 是当前实现的 ACP 协议版本。
@@ -33,6 +35,9 @@ type Endpoint struct {
 	mu      sync.Mutex
 	updates <-chan control.Update
 	stop    chan struct{}
+
+	capMu sync.RWMutex
+	caps  acpseam.Capabilities
 }
 
 // New 在 conn 上注册 ACP 方法。
@@ -60,10 +65,27 @@ func (e *Endpoint) Close() error {
 }
 
 type initializeParams struct {
-	ProtocolVersion int `json:"protocolVersion,omitempty"`
+	ProtocolVersion    int                 `json:"protocolVersion,omitempty"`
+	ClientCapabilities *clientCapabilities `json:"clientCapabilities,omitempty"`
 }
 
-func (e *Endpoint) initialize(_ context.Context, _ json.RawMessage) (any, error) {
+// clientCapabilities 是 initialize 里 client 声明的反向能力。
+type clientCapabilities struct {
+	FS struct {
+		ReadTextFile  bool `json:"readTextFile"`
+		WriteTextFile bool `json:"writeTextFile"`
+	} `json:"fs"`
+	Terminal bool `json:"terminal"`
+}
+
+func (e *Endpoint) initialize(_ context.Context, raw json.RawMessage) (any, error) {
+	var p initializeParams
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams, Message: "initialize 参数非法"}
+		}
+	}
+	e.setCapabilities(p.ClientCapabilities)
 	return map[string]any{
 		"protocolVersion": ProtocolVersion,
 		"agentCapabilities": map[string]any{
@@ -101,11 +123,24 @@ func (e *Endpoint) loadSession(ctx context.Context, raw json.RawMessage) (any, e
 	if err := json.Unmarshal(raw, &p); err != nil || p.SessionID == "" {
 		return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams, Message: "session/load 需要 sessionId"}
 	}
-	info, err := e.ctl.Load(ctx, p.SessionID)
-	if err != nil {
+	if _, err := e.ctl.Load(ctx, p.SessionID); err != nil {
 		return nil, rpcError(err)
 	}
-	return map[string]any{"sessionId": info.ID}, nil
+	// 先回放历史,再返回 null(ACP session/load 的结果就是 null)。
+	history, err := e.ctl.History(ctx, p.SessionID)
+	if err != nil && !seamerr.Is(err, seamerr.ErrUnimplemented) {
+		return nil, rpcError(err)
+	}
+	for _, u := range history {
+		params := replayUpdateParams(u)
+		if params == nil {
+			continue
+		}
+		if err := e.conn.Notify(ctx, "session/update", params); err != nil {
+			return nil, rpcError(err)
+		}
+	}
+	return nil, nil
 }
 
 type promptParams struct {
@@ -209,11 +244,22 @@ func (e *Endpoint) forwardUpdates(ch <-chan control.Update) {
 	}
 }
 
+// controlPlaneKinds 没有 ACP 等价物;实时转发直接跳过,避免非法 sessionUpdate。
+var controlPlaneKinds = map[string]bool{
+	"turn/start": true, "turn/end": true,
+	"step/start": true, "step/end": true,
+	"user/message": true, "user_message": true,
+	"compact/summary": true, "error": true,
+}
+
 func sessionUpdateParams(u control.Update) map[string]any {
+	if controlPlaneKinds[u.Kind] {
+		return nil
+	}
 	update := map[string]any{"sessionUpdate": u.Kind}
 	switch u.Kind {
 	case "assistant/message", "assistant_message", "assistant/delta", "assistant_delta":
-		text, recognized := assistantText(u.Data)
+		text, recognized := messageText(u.Data)
 		if !recognized {
 			// 未知形状:原样透出,至少不丢内容。
 			text = string(u.Data)
@@ -244,10 +290,25 @@ func sessionUpdateParams(u control.Update) map[string]any {
 	return map[string]any{"sessionId": u.SessionID, "update": update}
 }
 
-// toolCallUpdate 把 session 的 tool/call 事件映射成 ACP tool_call。
-//
-// 载荷是 tools.CallInfo:{"id","name","args"};id 是 ACP 关联后续
-// tool_call_update 的唯一键,缺失时不做映射(避免产生无法收尾的 UI 条目)。
+// replayUpdateParams 用于 session/load 回放:把 user/message 还原成
+// user_message_chunk;实时转发不回显用户消息。
+func replayUpdateParams(u control.Update) map[string]any {
+	switch u.Kind {
+	case "user/message", "user_message":
+		text, recognized := messageText(u.Data)
+		if !recognized || text == "" {
+			return nil
+		}
+		return map[string]any{"sessionId": u.SessionID, "update": map[string]any{
+			"sessionUpdate": "user_message_chunk",
+			"content":       map[string]any{"type": "text", "text": text},
+		}}
+	}
+	return sessionUpdateParams(u)
+}
+
+// toolCallUpdate 把 tool/call 映射成 ACP tool_call;CallInfo 的 id 是关联键,
+// 缺失时不做映射(避免产生无法收尾的 UI 条目)。
 func toolCallUpdate(raw json.RawMessage) map[string]any {
 	var info struct {
 		ID   string          `json:"id"`
@@ -274,10 +335,8 @@ func toolCallUpdate(raw json.RawMessage) map[string]any {
 	return out
 }
 
-// toolResultUpdate 把 session 的 tool/result 事件映射成 ACP tool_call_update。
-//
-// 载荷是 agent-loop 的 {"call":CallInfo,"result":Result};只把文本内容交给
-// ACP,原始 details 放进 rawOutput,避免把私有字段写进 content。
+// toolResultUpdate 把 tool/result 映射成 ACP tool_call_update:只把文本内容
+// 交给 ACP,原始 details 放进 rawOutput,避免私有字段混进 content。
 func toolResultUpdate(raw json.RawMessage) map[string]any {
 	var payload struct {
 		Call struct {
@@ -359,13 +418,10 @@ type textBlock struct {
 	Text string `json:"text"`
 }
 
-// assistantText 从 session 的 assistant/message 事件里取文本。
-//
-// agent-loop 的载荷是 {"message":{"content":[{"kind":"text","text":...}]}};
-// 兼容控制层实现直接发 {"text":...} 或 {"content":[...]} 的形态。
-// 第二个返回值表示「认得这个形状」:纯工具调用的空消息返回 ("", true),
-// 调用方据此不产生空 chunk;完全不认识的 JSON 才回退原文。
-func assistantText(raw json.RawMessage) (string, bool) {
+// messageText 从 assistant/user 事件里取文本,兼容 {"message":{...}}、
+// 直接 llm.Message 与 {"text":...} 三种形状。第二个返回值表示「认得形状」:
+// 空消息返回 ("", true),未知 JSON 返回 false(调用方回退原文)。
+func messageText(raw json.RawMessage) (string, bool) {
 	var envelope struct {
 		Message json.RawMessage `json:"message"`
 		Content []textBlock     `json:"content"`

@@ -79,6 +79,7 @@ Go 与 TS 必须实现同一组方法：
 | `session.load` | `{sessionId}` | `SessionInfo` |
 | `session.list` | `{}` | `SessionInfo[]` |
 | `session.prompt` | `PromptRequest` | `TurnResult` |
+| `session.history` | `{sessionId}` | `Update[]` |
 | `session.cancel` | `{sessionId}` | `{}` |
 | `session.permission` | `PermissionRequest` | `PermissionDecision` |
 | `session.close` | `{sessionId}` | `{}` |
@@ -94,12 +95,13 @@ prompt 未返回时到达对端（不是结束后补发）。
 |---|---|---|
 | `plugins/seam/control` | 2 | ✅ 契约、`Client`、`Invoker`、Go/TS 契约测试 |
 | `platform/bridge`（control 包装） | 2 适配 | ✅ TS `ctx.provide("control")` 自动包装 |
-| `core/agent-control` | 2 实现 | ✅ `agent.runner` → `control.Invoker`；create/load/list/prompt/cancel/permission/close；token 级 `assistant/delta`；取消返回 `cancelled` |
+| `core/agent-control` | 2 实现 | ✅ `agent.runner` → `control.Invoker`；create/load/list/prompt/history/cancel/permission/close；token 级 `assistant/delta`；取消返回 `cancelled`；`load` 可按 id 恢复 |
 | `seam/agent` | 能力契约 | ✅ `Runner`（Open/Run） |
 | `provider/rpc-json` | 3+4 | ◐ 现有 v1 协议；尚未拆成 control 适配 + frame 通道 |
 | `provider/control-rpc` | 3 | ✅ v1 方法 ↔ `control.Invoker`（Client + Register）；已用真实 rpc-json + tcp 跑通端到端 |
-| `provider/jsonrpc2` | 4 | ✅ 双向 JSON-RPC 2.0 连接、id/错误/通知、行上限；连接关闭会取消 handler ctx |
-| `provider/control-acp` | 3 | ✅ initialize/session/new/load/prompt/cancel；`session/update` 实时转发（assistant 文本 + tool_call/tool_call_update）；`session/request_permission` + `approval.Approver`；无 fs/terminal |
+| `provider/jsonrpc2` | 4 | ✅ 双向 JSON-RPC 2.0 连接、id/错误/通知、行上限、`null` 结果；连接关闭会取消 handler ctx |
+| `provider/control-acp` | 3 | ✅ initialize/session/new/load/prompt/cancel；`session/load` 回放历史；`session/update` 实时转发（assistant 文本 + tool_call/tool_call_update）；`session/request_permission` + `approval.Approver`；反向 fs/terminal 能力 |
+| `seam/acp` | 2 契约 | ✅ client 能力契约 + `Registry`（单连接绑定） |
 | `platform/host/cli`（`ada acp`） | 宿主入口 | ✅ 装配 preset → control 服务 → stdio 上的 ACP；日志走 stderr |
 | `provider/rpc-stdio` | 5 | ✅ stdio 单连接 Transport + Listener |
 
@@ -165,7 +167,7 @@ control.event           -> EventUpdate
 ```
 initialize          -> capabilities
 session/new         -> Client.Create
-session/load        -> Client.Load
+session/load        -> Client.Load + Client.History,回放 session/update 后返回 null
 session/prompt      -> Client.Prompt
 session/cancel      -> Client.Cancel
 session/update      <- control/update 事件
@@ -177,6 +179,11 @@ session/update      <- control/update 事件
 
 `session/cancel` 取消当前轮后，`session/prompt` 返回 `stopReason: "cancelled"`
 （不是 JSON-RPC 错误）；其它失败才是错误。
+
+`session/load` 的响应是 `null`：先按 `session.history` 回放 `session/update`，再返回。
+回放把 `user/message` 映射成 `user_message_chunk` 并跳过 `turn/*`、`step/*` 等
+控制面事件；实时转发不回显用户消息。恢复能力依赖 `session.Resumer`：
+`session-jsonl` 可跨重启恢复，`session-memory` 只能恢复同进程仍打开的会话。
 
 权限是反方向的：agent 内的 `approval.Ask` 调用 ACP client：
 
@@ -190,8 +197,22 @@ dispose, err := ep.BindApproval(ctx)   // 注册 approval.Approver("acp-client")
 把返回的 `outcome.selected` 映射成 allow/reject；取消、未知选项、连接错误都按拒绝处理
 （fail-closed），超时由 `approval.Ask` 的 30s 默认值兜底。
 
-ACP 的文件/终端回调应在控制层实现“按会话路由”，不能直接复用全局 `seam/fs`/`seam/shell`
-链；这是一期最大的设计风险，也是下一步。
+ACP 的文件/终端回调是另一组反向调用，由 [seam-acp.md](seam-acp.md) 承载：
+
+```
+fs/read_text_file   -> Client.ReadTextFile
+fs/write_text_file  -> Client.WriteTextFile
+terminal/create     -> Client.CreateTerminal
+terminal/output     -> Client.TerminalOutput
+terminal/wait_for_exit -> Client.WaitForExit
+terminal/kill       -> Client.KillTerminal
+terminal/release    -> Client.ReleaseTerminal
+```
+
+能力位来自 `initialize` 的 `clientCapabilities`；未声明时返回 `EUNIMPLEMENTED`
+且不向 client 发请求。路径是客户端绝对路径，因此**不接入** `seam/fs` 链，
+由需要的工具显式 `inject "acp"` 消费。`ada acp` 在连接建立后把端点绑定到
+`acp` 服务，退出时解绑。
 
 ### 宿主入口：ada acp
 
@@ -216,7 +237,8 @@ agent-control + tool-helper，不依赖网络与磁盘会话；回放里带一�
 4. `provider/control-acp` 最小聊天闭环（已完成）；
 5. 权限（已完成）：`session/request_permission` ↔ `approval.Approver`；
 6. 宿主入口（已完成）：`ada acp` + `examples/acp`；
-7. 再补文件、终端、MCP 与会话级路由。
+7. 会话恢复（已完成）：`session.history` + `session.Resumer` + `session/load` 回放；
+8. 文件/终端反向能力（已完成契约与适配，接入工具待做）；MCP 与会话级路由待做。
 
 ## 8. 验证
 

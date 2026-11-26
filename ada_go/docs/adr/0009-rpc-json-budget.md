@@ -40,7 +40,7 @@ AGENTS §5.3 规定「单个插件 ≤ 800 行,单一职责」。`provider/rpc-j
 ## 4. 影响面
 
 - 只影响 `plugins/provider/rpc-json`;`seam/rpc`(≤400)、`rpc-net`(≤400)、`rpc-pipe`(≤500)仍按通用预算。
-- `scripts/guard.ps1` 尚未检查插件预算;本 ADR 不改变门禁脚本,只约束评审。
+- `scripts/guard.ps1` 的插件预算表使用本 ADR 的 1300 行上限。
 - 若后续新增 CBOR/压缩/流式分片,必须按决策第 4 条先拆分。
 
 ## 5. 回滚方式

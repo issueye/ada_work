@@ -22,10 +22,6 @@ var defaultOptions = []control.PermissionOption{
 
 // DefaultPermissionOptions 返回默认选项的副本,调用方可安全修改。
 func DefaultPermissionOptions() []control.PermissionOption {
-	return defaultPermissionOptions()
-}
-
-func defaultPermissionOptions() []control.PermissionOption {
 	out := make([]control.PermissionOption, len(defaultOptions))
 	copy(out, defaultOptions)
 	return out
@@ -73,7 +69,7 @@ func (e *Endpoint) RequestPermission(ctx context.Context, req control.Permission
 	}
 	options := req.Options
 	if len(options) == 0 {
-		options = defaultPermissionOptions()
+		options = DefaultPermissionOptions()
 	}
 	toolCallID := req.ToolCallID
 	if toolCallID == "" {
@@ -141,7 +137,7 @@ func (a *approver) Name() string { return ApproverName }
 func (a *approver) Approve(ctx context.Context, req approval.Request) (approval.Decision, error) {
 	sessionID, _ := req.Details["sessionId"].(string)
 	toolCallID, _ := req.Details["toolCallId"].(string)
-	options := defaultPermissionOptions()
+	options := DefaultPermissionOptions()
 	dec, err := a.ep.RequestPermission(ctx, control.PermissionRequest{
 		SessionID:  sessionID,
 		Tool:       req.Op,
