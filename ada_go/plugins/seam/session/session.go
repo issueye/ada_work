@@ -85,6 +85,29 @@ type Meta struct {
 	Parent    string `json:"parent,omitempty"`
 }
 
+// sessionKey 是 ctx 中保存当前会话的键类型;避免字符串键冲突。
+type sessionKey struct{}
+
+// WithSession 把当前会话放进 ctx,供工具/策略追加控制面事件。
+//
+// 作用域是一次 Run:它不是跨会话索引,也不替代 session.Registry;
+// 没有会话上下文的调用(例如直接 Invoke 工具)应当被工具拒绝。
+func WithSession(ctx context.Context, s Session) context.Context {
+	if ctx == nil || s == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionKey{}, s)
+}
+
+// FromContext 读取当前调用作用域的会话。
+func FromContext(ctx context.Context) (Session, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	s, ok := ctx.Value(sessionKey{}).(Session)
+	return s, ok && s != nil
+}
+
 // Session 是会话的读写契约。
 //
 // 每个方法都收 context 吗?接口里只有 Compact 收 —— 其余是纯内存读写,

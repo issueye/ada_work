@@ -94,10 +94,9 @@ type Client interface {
 
 ## 7. 尚未做
 
-1. 还没有消费 `acp` 服务的工具插件（如 `acp-helper` 的 read/write/run）；
-2. 没有按会话选择「编辑器文件 or 本地文件」的路由策略；
-3. `session/new` 的 `mcpServers` 仍被忽略；
-4. 终端输出没有接入 `control/update`（工具结果仍走 `tool/result`）。
+1. 没有按会话选择「编辑器文件 or 本地文件」的路由策略；
+2. `session/new` 的 `mcpServers` 仍被忽略；
+3. 终端输出没有接入 `control/update`（工具结果仍走 `tool/result`）。
 
 ## 8. 验证
 

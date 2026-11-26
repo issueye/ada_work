@@ -14,6 +14,7 @@ import (
 	"github.com/issueye/ada_go_v2/platform/kernel"
 	seamagent "github.com/issueye/ada_go_v2/plugins/seam/agent"
 	"github.com/issueye/ada_go_v2/plugins/seam/llm"
+	planseam "github.com/issueye/ada_go_v2/plugins/seam/plan"
 	"github.com/issueye/ada_go_v2/plugins/seam/prompts"
 	"github.com/issueye/ada_go_v2/plugins/seam/seamerr"
 	"github.com/issueye/ada_go_v2/plugins/seam/session"
@@ -102,6 +103,8 @@ func (a *Agent) Run(ctx context.Context, sess session.Session, userText string) 
 	if userText == "" {
 		return TurnResult{}, fmt.Errorf("agent-loop: 用户消息不能为空")
 	}
+	// 会话上下文:工具/策略需要把控制面事件(计划等)写到正确的会话。
+	ctx = session.WithSession(ctx, sess)
 	// 工作区绑定来自 session.Meta,不另存会话→工作区映射;没有绑定时由
 	// workspace provider 的 Current 决定,旧 preset 完全不受影响。
 	if id := sess.Meta().Workspace; id != "" {
@@ -448,6 +451,7 @@ func (a *Agent) render(sess session.Session) []llm.Message {
 	}
 	out := make([]llm.Message, 0, len(evs))
 	boundary := a.compactedTo(sess)
+	var latestPlan *planseam.Plan
 	for _, ev := range evs {
 		if ev.Seq <= boundary && ev.Type != session.TypeCompactSummary {
 			continue
@@ -489,9 +493,38 @@ func (a *Agent) render(sess session.Session) []llm.Message {
 			if text != "" {
 				out = append(out, llm.Message{Role: llm.RoleSystem, Content: []llm.Block{{Kind: llm.BlockText, Text: text}}})
 			}
+		case planseam.EventUpdated:
+			if p, derr := planseam.Decode(ev.Data); derr == nil {
+				pp := p
+				latestPlan = &pp
+			}
+		}
+	}
+	if latestPlan != nil {
+		// 只注入最新计划,放在最后一条用户消息之前;旧的计划事件不重复出现。
+		msg := llm.Message{
+			Role:    llm.RoleSystem,
+			Content: []llm.Block{{Kind: llm.BlockText, Text: planseam.Text(*latestPlan)}},
+		}
+		if last := lastUserIndex(out); last >= 0 {
+			out = append(out, llm.Message{})
+			copy(out[last+1:], out[last:])
+			out[last] = msg
+		} else {
+			out = append(out, msg)
 		}
 	}
 	return out
+}
+
+// lastUserIndex 返回最后一条 user 消息的下标;没有时返回 -1。
+func lastUserIndex(msgs []llm.Message) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == llm.RoleUser {
+			return i
+		}
+	}
+	return -1
 }
 
 func mustJSON(v any) json.RawMessage {

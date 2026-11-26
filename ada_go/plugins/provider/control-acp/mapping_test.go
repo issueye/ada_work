@@ -7,6 +7,7 @@ import (
 
 	"github.com/issueye/ada_go_v2/plugins/provider/jsonrpc2"
 	"github.com/issueye/ada_go_v2/plugins/seam/control"
+	planseam "github.com/issueye/ada_go_v2/plugins/seam/plan"
 )
 
 func TestMessageText(t *testing.T) {
@@ -185,5 +186,33 @@ func TestRPCErrorMapping(t *testing.T) {
 	}
 	if e := rpcError(nil); e != nil {
 		t.Fatalf("nil 应返回 nil: %+v", e)
+	}
+}
+
+func TestPlanMapping(t *testing.T) {
+	data := planseam.Encode(planseam.Plan{
+		Title: "发布",
+		Steps: []planseam.Step{
+			{Content: "写代码", Status: planseam.StatusPending, Priority: planseam.PriorityHigh},
+			{Content: "跑测试", Status: planseam.StatusInProgress, Priority: planseam.PriorityMedium},
+		},
+	})
+	params := sessionUpdateParams(control.Update{SessionID: "s1", Kind: planseam.EventUpdated, Data: data})
+	if params == nil {
+		t.Fatal("计划事件应产生 session/update")
+	}
+	update := params["update"].(map[string]any)
+	if update["sessionUpdate"] != "plan" {
+		t.Fatalf("计划应映射成 plan: %+v", update)
+	}
+	entries, ok := update["entries"].([]map[string]any)
+	if !ok || len(entries) != 2 {
+		t.Fatalf("plan entries 不符: %+v", update["entries"])
+	}
+	if entries[0]["content"] != "写代码" || entries[0]["status"] != "pending" || entries[0]["priority"] != "high" {
+		t.Fatalf("第一步不符: %+v", entries[0])
+	}
+	if entries[1]["status"] != "in_progress" || entries[1]["priority"] != "medium" {
+		t.Fatalf("第二步不符: %+v", entries[1])
 	}
 }

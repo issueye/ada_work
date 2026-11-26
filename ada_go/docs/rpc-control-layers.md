@@ -1,6 +1,6 @@
 # RPC/ACP 五层控制架构
 
-> 状态：**第 2 层控制契约 + Go/TS 实现、第 3 层 control-rpc/ACP 适配、第 4 层 jsonrpc2、第 5 层 stdio、宿主入口 `ada acp` 已落地**；ACP 的 permission 已接，文件/终端回调待做。
+> 状态：**第 2 层控制契约 + Go/TS 实现、第 3 层 control-rpc/ACP 适配、第 4 层 jsonrpc2、第 5 层 stdio、宿主入口 `ada acp` 已落地**；ACP 的 permission、fs/terminal 反向能力与 `acp-helper` 已接，MCP 与会话级路由待做。
 > 关联：[seam-rpc.md](seam-rpc.md)、[AGENTS §2/§3](../AGENTS.md)。
 
 ## 0. 结论
@@ -96,6 +96,7 @@ prompt 未返回时到达对端（不是结束后补发）。
 | `plugins/seam/control` | 2 | ✅ 契约、`Client`、`Invoker`、Go/TS 契约测试 |
 | `platform/bridge`（control 包装） | 2 适配 | ✅ TS `ctx.provide("control")` 自动包装 |
 | `core/agent-control` | 2 实现 | ✅ `agent.runner` → `control.Invoker`；create/load/list/prompt/history/cancel/permission/close；token 级 `assistant/delta`；取消返回 `cancelled`；`load` 可按 id 恢复；同一会话单轮串行 |
+| `core/plan` | 2 实现 | ✅ 会话级计划：`plan_set` / `plan_update` / `plan_show`；计划写成 `plugin:plan/updated` session 事件；ACP 映射成 `plan` |
 | `seam/agent` | 能力契约 | ✅ `Runner`（Open/Run） |
 | `provider/rpc-json` | 3+4 | ◐ 现有 v1 协议；尚未拆成 control 适配 + frame 通道 |
 | `provider/control-rpc` | 3 | ✅ v1 方法 ↔ `control.Invoker`（Client + Register）；已用真实 rpc-json + tcp 跑通端到端 |
@@ -176,6 +177,7 @@ session/update      <- control/update 事件
   assistant/message -> agent_message_chunk
   tool/call         -> tool_call
   tool/result       -> tool_call_update
+  plan/updated      -> plan
 ```
 
 `session/cancel` 取消当前轮后，`session/prompt` 返回 `stopReason: "cancelled"`
@@ -247,7 +249,7 @@ agent-control + tool-helper，不依赖网络与磁盘会话；回放里带一�
 5. 权限（已完成）：`session/request_permission` ↔ `approval.Approver`；
 6. 宿主入口（已完成）：`ada acp` + `examples/acp`；
 7. 会话恢复（已完成）：`session.history` + `session.Resumer` + `session/load` 回放；
-8. 文件/终端反向能力（已完成契约与适配，接入工具待做）；MCP 与会话级路由待做。
+8. 文件/终端反向能力（已完成契约、适配与 `acp-helper` 工具）；MCP 与会话级路由待做。
 
 ## 8. 验证
 

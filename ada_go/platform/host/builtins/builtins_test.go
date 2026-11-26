@@ -13,7 +13,7 @@ func TestBuiltinGoPlugins(t *testing.T) {
 	for _, id := range []string{
 		"seam-fs", "seam-acp", "fs-local", "caps-static", "caps-gate", "shell-local", "seam-approval",
 		"seam-llm", "llm-replay", "llm-openai", "seam-prompts", "system-prompt", "seam-tools",
-		"agent-loop", "agent-control", "session-stats", "compaction-basic", "approval-gate",
+		"agent-loop", "agent-control", "session-stats", "compaction-basic", "plan", "approval-gate",
 		"audit-log", "llm-retry", "tool-timeout", "session-jsonl",
 		"seam-rpc", "rpc-json", "rpc-net", "rpc-pipe",
 		"seam-secrets", "secrets-env", "secrets-guard",

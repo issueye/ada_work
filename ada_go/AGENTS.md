@@ -103,6 +103,7 @@
 | [tool-memory-helper.md](docs/tool-memory-helper.md) | TS 长期记忆:memory-helper + ada:fs/node:crypto/Intl.Segmenter |
 | [tool-tool-helper.md](docs/tool-tool-helper.md) | Go 工具插件:tool-helper 的 tool_find / tool_exec |
 | [tool-acp-helper.md](docs/tool-acp-helper.md) | Go 工具插件:acp-helper 的 acp_read_file / acp_write_file / acp_run |
+| [plan-plugin.md](docs/plan-plugin.md) | core/plan:会话级计划、plan_set/update/show、ACP plan 映射 |
 | [node-compat.md](docs/node-compat.md) | Node 内置模块兼容层:node:fs/path/os/events/util 等 |
 | [env-file.md](docs/env-file.md) | 环境变量文件(.env):加载位置、优先级、语法与安全边界 |
 | [adr/0001](docs/adr/0001-deferred-m5-scope.md) | ADR:OS 级沙箱与真实桌面窗口延期(复议 2027-01-15) |

@@ -1165,10 +1165,10 @@ func TestACPServe(t *testing.T) {
 		"prompt":    []map[string]string{{"type": "text", "text": "你好"}},
 	})
 
-	var promptDone, sawToolCall, sawToolResult, sawThought bool
+	var promptDone, sawToolCall, sawToolResult, sawThought, sawPlan bool
 	var chunks []string
 	deadline := time.After(20 * time.Second)
-	for !promptDone || !sawToolCall || !sawToolResult || !sawThought ||
+	for !promptDone || !sawToolCall || !sawToolResult || !sawThought || !sawPlan ||
 		!strings.Contains(strings.Join(chunks, ""), "你好，我是 ACP agent。") {
 		select {
 		case m, ok := <-lines:
@@ -1206,20 +1206,38 @@ func TestACPServe(t *testing.T) {
 				}
 				sawThought = true
 			case "tool_call":
-				sawToolCall = true
-				if p.Update["toolCallId"] != "call-1" || p.Update["title"] != "tool_find" ||
-					p.Update["kind"] != "search" || p.Update["status"] != "in_progress" {
-					t.Fatalf("tool_call 映射不符: %+v", p.Update)
+				if p.Update["toolCallId"] == "call-1" {
+					sawToolCall = true
+					if p.Update["title"] != "tool_find" || p.Update["kind"] != "search" ||
+						p.Update["status"] != "in_progress" {
+						t.Fatalf("tool_call 映射不符: %+v", p.Update)
+					}
 				}
 			case "tool_call_update":
-				sawToolResult = true
-				if p.Update["toolCallId"] != "call-1" || p.Update["status"] != "completed" {
-					t.Fatalf("tool_call_update 映射不符: %+v", p.Update)
+				if p.Update["toolCallId"] == "call-1" {
+					sawToolResult = true
+					if p.Update["status"] != "completed" {
+						t.Fatalf("tool_call_update 映射不符: %+v", p.Update)
+					}
+				}
+			case "plan":
+				sawPlan = true
+				entries, _ := p.Update["entries"].([]any)
+				if len(entries) != 2 {
+					t.Fatalf("plan entries 数量不符: %+v", p.Update)
+				}
+				first, _ := entries[0].(map[string]any)
+				if first["content"] != "读取文件" || first["status"] != "completed" {
+					t.Fatalf("plan 第一条不符: %+v", first)
+				}
+				second, _ := entries[1].(map[string]any)
+				if second["status"] != "in_progress" || second["priority"] != "high" {
+					t.Fatalf("plan 第二条不符: %+v", second)
 				}
 			}
 		case <-deadline:
-			t.Fatalf("等待 prompt 完成超时(chunks=%q tool=%v/%v),stderr=%s",
-				strings.Join(chunks, ""), sawToolCall, sawToolResult, errOut.String())
+			t.Fatalf("等待 prompt 完成超时(chunks=%q tool=%v/%v plan=%v),stderr=%s",
+				strings.Join(chunks, ""), sawToolCall, sawToolResult, sawPlan, errOut.String())
 		}
 	}
 	joined := strings.Join(chunks, "")

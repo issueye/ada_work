@@ -22,6 +22,7 @@ import (
 	"github.com/issueye/ada_go_v2/plugins/provider/jsonrpc2"
 	acpseam "github.com/issueye/ada_go_v2/plugins/seam/acp"
 	"github.com/issueye/ada_go_v2/plugins/seam/control"
+	planseam "github.com/issueye/ada_go_v2/plugins/seam/plan"
 	"github.com/issueye/ada_go_v2/plugins/seam/seamerr"
 )
 
@@ -333,6 +334,18 @@ func sessionUpdateParams(u control.Update) map[string]any {
 		} else if len(u.Data) > 0 {
 			update["data"] = u.Data
 		}
+	case planseam.EventUpdated:
+		p, derr := planseam.Decode(u.Data)
+		if derr != nil || len(p.Steps) == 0 {
+			return nil
+		}
+		entries := make([]map[string]any, 0, len(p.Steps))
+		for _, s := range p.Steps {
+			entries = append(entries, map[string]any{
+				"content": s.Content, "status": string(s.Status), "priority": string(s.Priority),
+			})
+		}
+		update = map[string]any{"sessionUpdate": "plan", "entries": entries}
 	default:
 		if len(u.Data) > 0 {
 			update["data"] = u.Data

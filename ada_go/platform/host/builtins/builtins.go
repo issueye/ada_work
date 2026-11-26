@@ -11,6 +11,7 @@ import (
 	controlgo "github.com/issueye/ada_go_v2/plugins/core/agent-control"
 	agentloop "github.com/issueye/ada_go_v2/plugins/core/agent-loop"
 	compaction "github.com/issueye/ada_go_v2/plugins/core/compaction-basic"
+	coreplan "github.com/issueye/ada_go_v2/plugins/core/plan"
 	sessionstats "github.com/issueye/ada_go_v2/plugins/core/session-stats"
 	systemprompt "github.com/issueye/ada_go_v2/plugins/core/system-prompt"
 	approvalgate "github.com/issueye/ada_go_v2/plugins/policy/approval-gate"
@@ -75,6 +76,7 @@ func Plugins() map[string]func() kernel.Plugin {
 		"agent-loop":       agentloop.Plugin,
 		"agent-control":    controlgo.Plugin,
 		"session-stats":    sessionstats.Plugin,
+		"plan":             coreplan.Plugin,
 		"compaction-basic": compaction.Plugin,
 		"approval-gate":    approvalgate.Plugin,
 		"audit-log":        auditlog.Plugin,
