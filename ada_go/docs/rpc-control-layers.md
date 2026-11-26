@@ -1,6 +1,6 @@
 # RPC/ACP 五层控制架构
 
-> 状态：**第 2 层契约 + Go/TS 实现通路已落地**；第 4/5 层与 ACP 适配待接。
+> 状态：**第 2 层控制契约 + Go/TS 实现、第 4 层 jsonrpc2、第 5 层 stdio 已落地**；第 3 层 RPC/ACP 适配待接。
 > 关联：[seam-rpc.md](seam-rpc.md)、[AGENTS §2/§3](../AGENTS.md)。
 
 ## 0. 结论
@@ -96,9 +96,9 @@ ACP 协议适配器把它映射成 `session/update`，RPC 适配器映射成事�
 | `seam/agent` | 能力契约 | ✅ `Runner`（Open/Run） |
 | `provider/rpc-json` | 3+4 | ◐ 现有 v1 协议；尚未拆成 control 适配 + frame 通道 |
 | `provider/control-rpc-v1` | 3 | ⏳ 待建：v1 方法 → `control.Client` |
-| `provider/jsonrpc2` | 4 | ⏳ 待建：JSON-RPC 2.0 消息通道 |
+| `provider/jsonrpc2` | 4 | ✅ 双向 JSON-RPC 2.0 连接、id/错误/通知、行上限 |
 | `provider/control-acp` | 3 | ⏳ 待建：ACP 方法 → `control.Client` |
-| `provider/rpc-stdio` | 5 | ⏳ 待建 |
+| `provider/rpc-stdio` | 5 | ✅ stdio 单连接 Transport + Listener |
 
 ## 4. 为什么 TS 实现不破坏插件系统
 
@@ -155,7 +155,7 @@ ACP 的文件/终端回调应在控制层实现“按会话路由”，不能直
 ## 7. 迁移顺序
 
 1. 控制契约 + Go/TS 实现通路（已完成；Go 由 `core/agent-control`，TS 由 bridge 包装）；
-2. `provider/jsonrpc2` + `provider/rpc-stdio`；
+2. `provider/jsonrpc2` + `provider/rpc-stdio`（已完成）；
 3. `provider/control-rpc-v1`，把现有 v1 消费者切到控制层；
 4. `provider/control-acp` 的最小聊天闭环；
 5. 再补权限、文件、终端、MCP 与会话级路由。

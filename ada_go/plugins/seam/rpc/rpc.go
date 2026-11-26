@@ -31,6 +31,8 @@ const (
 	Pipe Network = "pipe"
 	// TLS 是 TLS over TCP 传输(P4;证书由 provider/rpc-tls 加载)。
 	NetworkTLS Network = "tls"
+	// Stdio 是单连接 stdin/stdout 传输(ACP/CLI attach)。
+	Stdio Network = "stdio"
 )
 
 // Address 是一个 RPC 端点。
@@ -56,6 +58,10 @@ func Parse(raw string) (Address, error) {
 		return Address{}, Invalid("地址包含 NUL: " + raw)
 	}
 	switch n {
+	case Stdio:
+		if name != "local" {
+			return Address{}, Invalid("stdio 地址必须是 stdio://local: " + raw)
+		}
 	case TCP, NetworkTLS:
 		host, port, err := net.SplitHostPort(name)
 		if err != nil {
