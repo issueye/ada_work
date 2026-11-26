@@ -54,7 +54,8 @@ type Session interface {
 - `session.Resumer` 是 provider 的可选扩展:按既有 id 打开会话(`OpenID`)。
   `session-jsonl` 能恢复持久化会话,`session-memory` 只认识本进程仍打开的会话;
   未知 id 一律报错,不静默新建。控制层 `session.load` 在内存表缺失时经
-  `agent.Resumer` 走这条路径。
+  `agent.Resumer` 走这条路径;`session.load` 可带 `cwd`,由控制层重新解析工作区
+  并在本进程内覆盖会话 meta,不修改 provider 持久化的 meta。
 - `session.WithSession` / `FromContext`:agent-loop 在 `Run` 开始时把当前会话放进
   ctx,供 Go 工具/策略追加控制面事件(`core/plan` 的计划事件)。作用域是一次 Run,
   不是跨会话索引;TS 工具拿不到它。

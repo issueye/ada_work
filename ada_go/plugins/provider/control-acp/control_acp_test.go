@@ -27,6 +27,8 @@ type fakeControl struct {
 	created  int
 	prompt   string
 	create   control.CreateRequest
+	loadID   string
+	loadCwd  string
 	closed   []string
 	onPrompt func()
 }
@@ -38,6 +40,12 @@ func (f *fakeControl) Invoke(_ context.Context, method string, params json.RawMe
 		_ = json.Unmarshal(params, &f.create)
 		return json.RawMessage(`{"id":"s1","title":"ACP"}`), nil
 	case control.MethodSessionLoad:
+		var req struct {
+			SessionID string `json:"sessionId"`
+			Cwd       string `json:"cwd,omitempty"`
+		}
+		_ = json.Unmarshal(params, &req)
+		f.loadID, f.loadCwd = req.SessionID, req.Cwd
 		return json.RawMessage(`{"id":"s1","title":"ACP"}`), nil
 	case control.MethodSessionList:
 		return json.RawMessage(`[{"id":"s1"}]`), nil
@@ -388,12 +396,18 @@ func TestACPLoadReplaysHistory(t *testing.T) {
 	}))
 	t.Cleanup(func() { _ = client.Close() })
 	server := jsonrpc2.New(ctx, b)
-	ep := controlacp.New(server, control.New(&fakeControl{}))
+	fake := &fakeControl{}
+	ep := controlacp.New(server, control.New(fake))
 	t.Cleanup(func() { _ = ep.Close() })
 
 	var res any
-	if err := client.Call(ctx, "session/load", map[string]any{"sessionId": "s1"}, &res); err != nil {
+	if err := client.Call(ctx, "session/load", map[string]any{
+		"sessionId": "s1", "cwd": "/workspace",
+	}, &res); err != nil {
 		t.Fatalf("session/load 失败: %v", err)
+	}
+	if fake.loadID != "s1" || fake.loadCwd != "/workspace" {
+		t.Fatalf("session/load 应把 cwd 传给控制层: %+v", fake)
 	}
 	if res != nil {
 		t.Fatalf("session/load 应返回 null: %+v", res)

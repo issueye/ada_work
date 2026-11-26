@@ -203,7 +203,7 @@ func (e *Endpoint) loadSession(ctx context.Context, raw json.RawMessage) (any, e
 	if err := rejectMCPServers(p.MCPServers); err != nil {
 		return nil, rpcError(err)
 	}
-	if _, err := e.ctl.Load(ctx, p.SessionID); err != nil {
+	if _, err := e.ctl.Load(ctx, p.SessionID, p.Cwd); err != nil {
 		return nil, rpcError(err)
 	}
 	e.trackSession(p.SessionID)

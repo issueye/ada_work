@@ -534,10 +534,11 @@ func TestGoControlRejectsConcurrentPrompt(t *testing.T) {
 	}
 }
 
-// metaRunner 记录 Open 收到的 meta,用于验证 cwd → workspace 绑定。
+// metaRunner 记录 Open 收到的 meta 与 Run 时的会话工作区绑定。
 type metaRunner struct {
-	reg  *session.Registry
-	meta session.Meta
+	reg          *session.Registry
+	meta         session.Meta
+	ranWorkspace string
 }
 
 func (r *metaRunner) Open(ctx context.Context, meta session.Meta) (session.Session, error) {
@@ -545,7 +546,20 @@ func (r *metaRunner) Open(ctx context.Context, meta session.Meta) (session.Sessi
 	return r.reg.Open(ctx, "", meta)
 }
 
-func (r *metaRunner) Run(context.Context, session.Session, string) (seamagent.Result, error) {
+func (r *metaRunner) Resume(ctx context.Context, id string) (session.Session, error) {
+	p, err := r.reg.Provider("")
+	if err != nil {
+		return nil, err
+	}
+	res, ok := p.(session.Resumer)
+	if !ok {
+		return nil, errors.New("provider 不支持 Resumer")
+	}
+	return res.OpenID(ctx, id, session.Meta{})
+}
+
+func (r *metaRunner) Run(_ context.Context, sess session.Session, _ string) (seamagent.Result, error) {
+	r.ranWorkspace = sess.Meta().Workspace
 	return seamagent.Result{TurnID: "t1"}, nil
 }
 
@@ -596,5 +610,77 @@ func TestGoControlCreateBindsWorkspaceByCwd(t *testing.T) {
 	}
 	if _, err := c.Create(context.Background(), control.CreateRequest{Cwd: filepath.Join(root, "other")}); err == nil {
 		t.Fatal("cwd 不属于任何工作区时应拒绝")
+	}
+}
+
+func TestGoControlLoadRebindsWorkspace(t *testing.T) {
+	root1, root2 := t.TempDir(), t.TempDir()
+	for _, root := range []*string{&root1, &root2} {
+		if resolved, err := filepath.EvalSymlinks(*root); err == nil {
+			*root = resolved
+		}
+	}
+	app := kernel.New(kernel.Options{})
+	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+	mount := func(p kernel.Plugin, cfg kernel.Config) {
+		t.Helper()
+		if _, err := app.Plugin(p, cfg); err != nil {
+			t.Fatalf("挂载 %s 失败: %v", p.Name(), err)
+		}
+	}
+	mount(session.Plugin(), kernel.NewConfig(nil))
+	mount(memory.Plugin(), kernel.NewConfig(nil))
+	mount(approval.Plugin(), kernel.NewConfig(nil))
+	mount(workspace.Plugin(), kernel.NewConfig(nil))
+	mount(workspacelocal.Plugin(), kernel.NewConfig(map[string]any{
+		"active": "one",
+		"workspaces": []any{
+			map[string]any{"id": "one", "root": root1},
+			map[string]any{"id": "two", "root": root2},
+		},
+	}))
+	reg, err := kernel.Service[*session.Registry](app.Root(), "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &metaRunner{reg: reg}
+	mount(kernel.Func("fake-agent", func(ctx *kernel.Context, _ kernel.Config) (kernel.Dispose, error) {
+		_, err := ctx.Provide("agent.runner", runner, kernel.WithVersion(1), kernel.WithKind("object"))
+		return nil, err
+	}).WithProvide("agent.runner"), kernel.NewConfig(nil))
+	mount(controlgo.Plugin(), kernel.NewConfig(nil))
+	raw, err := app.Root().Service(control.ServiceName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := control.New(raw.(control.Invoker))
+
+	info, err := c.Create(context.Background(), control.CreateRequest{Cwd: root1})
+	if err != nil {
+		t.Fatalf("create 失败: %v", err)
+	}
+	if _, err := c.Load(context.Background(), info.ID, root2); err != nil {
+		t.Fatalf("load 切换 cwd 失败: %v", err)
+	}
+	if _, err := c.Prompt(context.Background(), control.PromptRequest{SessionID: info.ID, Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if runner.ranWorkspace != "two" {
+		t.Fatalf("load 后应绑定工作区 two,实际 %q", runner.ranWorkspace)
+	}
+
+	// 内存表里没有的会话走 Resume 路径,同样应按 load cwd 重新绑定。
+	persisted, err := reg.Open(context.Background(), "", session.Meta{Title: "persisted", Workspace: "two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Load(context.Background(), persisted.ID(), root1); err != nil {
+		t.Fatalf("恢复并切换 cwd 失败: %v", err)
+	}
+	if _, err := c.Prompt(context.Background(), control.PromptRequest{SessionID: persisted.ID(), Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if runner.ranWorkspace != "one" {
+		t.Fatalf("恢复后应绑定工作区 one,实际 %q", runner.ranWorkspace)
 	}
 }

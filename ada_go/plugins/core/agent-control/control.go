@@ -35,6 +35,15 @@ type managed struct {
 	seq       uint64
 }
 
+// metaSession 覆盖 Meta,用于 session/load 带 cwd 时重新绑定工作区。
+// 其它方法全部委托给底层会话;事件、历史与取消语义不变。
+type metaSession struct {
+	session.Session
+	meta session.Meta
+}
+
+func (s *metaSession) Meta() session.Meta { return s.meta }
+
 // Service 是 Go 侧的控制层实现。
 type Service struct {
 	runner    seamagent.Runner
@@ -106,6 +115,7 @@ func (s *Service) create(ctx context.Context, raw json.RawMessage) (json.RawMess
 func (s *Service) load(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 	var req struct {
 		SessionID string `json:"sessionId"`
+		Cwd       string `json:"cwd,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &req); err != nil || req.SessionID == "" {
 		return nil, control.Invalid("session.load 需要 sessionId")
@@ -120,7 +130,35 @@ func (s *Service) load(ctx context.Context, raw json.RawMessage) (json.RawMessag
 			return nil, control.Invalid("会话不存在: " + req.SessionID)
 		}
 	}
+	if req.Cwd != "" {
+		workspaceID, err := s.bindWorkspace(ctx, req.Cwd)
+		if err != nil {
+			return nil, err
+		}
+		if workspaceID != "" {
+			s.mu.Lock()
+			if m.cancel != nil {
+				s.mu.Unlock()
+				return nil, control.Invalid("会话正在运行,不能通过 session.load 切换 cwd")
+			}
+			if m.sess != nil {
+				m.sess = rebindWorkspace(m.sess, workspaceID)
+			}
+			m.updatedAt = time.Now()
+			s.mu.Unlock()
+		}
+	}
 	return json.Marshal(s.info(req.SessionID, m))
+}
+
+// rebindWorkspace 复制当前 meta 并覆盖 Workspace;不改底层 provider 的持久化 meta。
+func rebindWorkspace(sess session.Session, id string) session.Session {
+	meta := sess.Meta()
+	if meta.Workspace == id {
+		return sess
+	}
+	meta.Workspace = id
+	return &metaSession{Session: sess, meta: meta}
 }
 
 // bindWorkspace 把 ACP 的 cwd 映射到已配置工作区。

@@ -76,7 +76,7 @@ Go 与 TS 必须实现同一组方法：
 | 方法 | 入参 | 返回 |
 |---|---|---|
 | `session.create` | `CreateRequest` | `SessionInfo` |
-| `session.load` | `{sessionId}` | `SessionInfo` |
+| `session.load` | `{sessionId, cwd?}` | `SessionInfo` |
 | `session.list` | `{}` | `SessionInfo[]` |
 | `session.prompt` | `PromptRequest` | `TurnResult` |
 | `session.history` | `{sessionId}` | `Update[]` |
@@ -168,7 +168,7 @@ control.event           -> EventUpdate
 ```
 initialize          -> capabilities
 session/new         -> Client.Create(cwd 经 workspace.Locator 映射为工作区 ID)
-session/load        -> Client.Load + Client.History,回放 session/update 后返回 null
+session/load        -> Client.Load(cwd 可选,重新绑定工作区) + Client.History,回放 session/update 后返回 null
 session/prompt      -> Client.Prompt
 session/cancel      -> Client.Cancel
 session/update      <- control/update 事件
@@ -215,6 +215,12 @@ session/update      <- control/update 事件
 回放把 `user/message` 映射成 `user_message_chunk` 并跳过 `turn/*`、`step/*` 等
 控制面事件；实时转发不回显用户消息。恢复能力依赖 `session.Resumer`：
 `session-jsonl` 可跨重启恢复，`session-memory` 只能恢复同进程仍打开的会话。
+
+`session/load` 带 `cwd` 时，控制层用同一个 `workspace.Locator` 重新解析工作区，
+覆盖本进程内该会话的 `Meta.Workspace`（底层 provider 的持久化 meta 不改）；
+后续 prompt 立即按新工作区绑定。有 workspace provider 时，cwd 不属于任何
+已配置工作区返回 `EINVALID`；没有 workspace provider 时保持会话原有 meta。
+会话正在运行 prompt 时拒绝切换，避免运行中的工具与工作区不一致。
 
 权限是反方向的：agent 内的 `approval.Ask` 调用 ACP client：
 

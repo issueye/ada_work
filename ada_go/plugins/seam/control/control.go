@@ -163,8 +163,14 @@ func (c *Client) Create(ctx context.Context, req CreateRequest) (SessionInfo, er
 	return info, nil
 }
 
-func (c *Client) Load(ctx context.Context, id string) (SessionInfo, error) {
-	out, err := c.invoke(ctx, MethodSessionLoad, map[string]string{"sessionId": id})
+// Load 按 id 恢复会话。cwd 可选:ACP session/load 带 cwd 时传入,
+// 由控制层重新解析工作区;不传则保持会话已有的 meta。
+func (c *Client) Load(ctx context.Context, id string, cwd ...string) (SessionInfo, error) {
+	params := map[string]string{"sessionId": id}
+	if len(cwd) > 0 && cwd[0] != "" {
+		params["cwd"] = cwd[0]
+	}
+	out, err := c.invoke(ctx, MethodSessionLoad, params)
 	if err != nil {
 		return SessionInfo{}, err
 	}
