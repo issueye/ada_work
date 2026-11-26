@@ -1165,10 +1165,10 @@ func TestACPServe(t *testing.T) {
 		"prompt":    []map[string]string{{"type": "text", "text": "你好"}},
 	})
 
-	var promptDone, sawToolCall, sawToolResult bool
+	var promptDone, sawToolCall, sawToolResult, sawThought bool
 	var chunks []string
 	deadline := time.After(20 * time.Second)
-	for !promptDone || !sawToolCall || !sawToolResult ||
+	for !promptDone || !sawToolCall || !sawToolResult || !sawThought ||
 		!strings.Contains(strings.Join(chunks, ""), "你好，我是 ACP agent。") {
 		select {
 		case m, ok := <-lines:
@@ -1199,6 +1199,12 @@ func TestACPServe(t *testing.T) {
 						chunks = append(chunks, text)
 					}
 				}
+			case "agent_thought_chunk":
+				content, _ := p.Update["content"].(map[string]any)
+				if text, _ := content["text"].(string); text != "先想一下" {
+					t.Fatalf("推理增量映射不符: %+v", p.Update)
+				}
+				sawThought = true
 			case "tool_call":
 				sawToolCall = true
 				if p.Update["toolCallId"] != "call-1" || p.Update["title"] != "tool_find" ||

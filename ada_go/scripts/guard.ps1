@@ -141,8 +141,8 @@ if ($hostTotal -gt 2500) {
     Pass "host 行数预算(总 $hostTotal / 2500,cli $($perAdapter['cli']) / 1500,其它最大 $otherMax / 800)"
 }
 
-# 7.2 单插件预算(AGENTS §5.3;例外:rpc-json ≤1300 ADR 0009,session-jsonl ≤1000 ADR 0010)。
-$pluginLimits = @{ "rpc-json" = 1300; "session-jsonl" = 1000 }
+# 7.2 单插件预算(AGENTS §5.3;例外:rpc-json ≤1300 ADR 0009,session-jsonl ≤1000 ADR 0010,control-acp ≤1000 ADR 0017)。
+$pluginLimits = @{ "rpc-json" = 1300; "session-jsonl" = 1000; "control-acp" = 1000 }
 $pluginViolations = @()
 foreach ($category in @("provider", "policy", "core", "tool")) {
     $categoryPath = Join-Path "plugins" $category
@@ -161,7 +161,7 @@ foreach ($category in @("provider", "policy", "core", "tool")) {
 if ($pluginViolations.Count -gt 0) {
     Fail "单插件行数预算" $pluginViolations
 } else {
-    Pass "单插件行数预算(默认 800;rpc-json 1300;session-jsonl 1000)"
+    Pass "单插件行数预算(默认 800;rpc-json 1300;session-jsonl 1000;control-acp 1000)"
 }
 
 if ($fail -ne 0) {

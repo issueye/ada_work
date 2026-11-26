@@ -100,7 +100,7 @@ prompt 未返回时到达对端（不是结束后补发）。
 | `provider/rpc-json` | 3+4 | ◐ 现有 v1 协议；尚未拆成 control 适配 + frame 通道 |
 | `provider/control-rpc` | 3 | ✅ v1 方法 ↔ `control.Invoker`（Client + Register）；已用真实 rpc-json + tcp 跑通端到端 |
 | `provider/jsonrpc2` | 4 | ✅ 双向 JSON-RPC 2.0 连接、id/错误/通知、行上限、`null` 结果；连接关闭会取消 handler ctx |
-| `provider/control-acp` | 3 | ✅ initialize/session/new/load/prompt/cancel；`session/load` 回放历史；`session/update` 实时转发（assistant 文本 + tool_call/tool_call_update）；`session/request_permission` + `approval.Approver`；反向 fs/terminal 能力 |
+| `provider/control-acp` | 3 | ✅ initialize/session/new/load/prompt/cancel；`session/load` 回放历史；`session/update` 实时转发（assistant 文本/推理 + tool_call/tool_call_update）；`session/request_permission` + `approval.Approver`；反向 fs/terminal 能力 |
 | `seam/acp` | 2 契约 | ✅ client 能力契约 + `Registry`（单连接绑定） |
 | `platform/host/cli`（`ada acp`） | 宿主入口 | ✅ 装配 preset → control 服务 → stdio 上的 ACP；日志走 stderr |
 | `provider/rpc-stdio` | 5 | ✅ stdio 单连接 Transport + Listener |
@@ -125,10 +125,10 @@ prompt 未返回时到达对端（不是结束后补发）。
 所以工具调用与中间消息能在 prompt 未返回时到达适配器。
 
 token 级流式：`agent-loop` 在每次 `llm/stream` 回调后发 `agent/delta`
-（`{sessionId,turnId,stepId,kind,text}`），`agent-control` 在 prompt 期间订阅并投影成
-`control/update` 的 `assistant/delta`。同一 step 一旦有增量，就跳过该 step 的
-`assistant/message`，避免客户端重复显示；没有增量的 provider 仍发整段消息。
-`agent/delta` 不写进 session，也不参与 `render`。
+（`{sessionId,turnId,stepId,kind,text}`，`kind=text|reasoning`），`agent-control` 在
+prompt 期间订阅并投影成 `control/update` 的 `assistant/delta` 与
+`assistant/reasoning`。只有正文增量会抑制该 step 的 `assistant/message`，推理增量不会；
+没有增量的 provider 仍发整段消息。`agent/delta` 不写进 session，也不参与 `render`。
 
 ACP 适配器从会话事件里提取文本，而不是把整段 JSON 当文本：
 `assistant/message` 的 `{"message":{"content":[{"kind":"text","text":...}]}}`
@@ -172,6 +172,7 @@ session/prompt      -> Client.Prompt
 session/cancel      -> Client.Cancel
 session/update      <- control/update 事件
   assistant/delta   -> agent_message_chunk
+  assistant/reasoning -> agent_thought_chunk
   assistant/message -> agent_message_chunk
   tool/call         -> tool_call
   tool/result       -> tool_call_update

@@ -188,7 +188,8 @@ func (a *Agent) Run(ctx context.Context, sess session.Session, userText string) 
 				}
 				d = delta
 			}
-			if a.bus != nil && d.Kind == llm.DeltaText && d.Text != "" {
+			if a.bus != nil && d.Text != "" &&
+				(d.Kind == llm.DeltaText || d.Kind == llm.DeltaReasoning) {
 				// 观察事件:控制层用它做 token 级流式;不是门禁,失败也不影响本轮。
 				a.bus.EmitContext(ctx, seamagent.EventDelta, seamagent.DeltaEvent{
 					SessionID: sess.ID(), TurnID: turn.ID, StepID: stepID,

@@ -1,2 +1,2 @@
-{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"我先查一下工具"}]},"toolCalls":[{"id":"call-1","name":"tool_find","args":{"query":"tool"}}],"usage":{"inputTokens":10,"outputTokens":4},"finish":"tool_calls"}}
+{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"我先查一下工具"}]},"toolCalls":[{"id":"call-1","name":"tool_find","args":{"query":"tool"}}],"usage":{"inputTokens":10,"outputTokens":4},"finish":"tool_calls"},"deltas":[{"kind":"reasoning","text":"先想一下"},{"kind":"text","text":"我先查一下工具"},{"kind":"done"}]}
 {"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"你好，我是 ACP agent。"}]},"usage":{"inputTokens":20,"outputTokens":6},"finish":"stop"}}

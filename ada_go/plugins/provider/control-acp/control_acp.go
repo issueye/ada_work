@@ -258,7 +258,8 @@ func sessionUpdateParams(u control.Update) map[string]any {
 	}
 	update := map[string]any{"sessionUpdate": u.Kind}
 	switch u.Kind {
-	case "assistant/message", "assistant_message", "assistant/delta", "assistant_delta":
+	case "assistant/message", "assistant_message", "assistant/delta", "assistant_delta",
+		"assistant/reasoning", "assistant_reasoning":
 		text, recognized := messageText(u.Data)
 		if !recognized {
 			// 未知形状:原样透出,至少不丢内容。
@@ -269,6 +270,9 @@ func sessionUpdateParams(u control.Update) map[string]any {
 			return nil
 		}
 		update["sessionUpdate"] = "agent_message_chunk"
+		if u.Kind == "assistant/reasoning" || u.Kind == "assistant_reasoning" {
+			update["sessionUpdate"] = "agent_thought_chunk"
+		}
 		update["content"] = map[string]any{"type": "text", "text": text}
 	case "tool/call", "tool_call":
 		if mapped := toolCallUpdate(u.Data); mapped != nil {

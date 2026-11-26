@@ -129,3 +129,21 @@ func TestReplayUpdateParams(t *testing.T) {
 		t.Fatal("turn/start 不应发给 ACP")
 	}
 }
+
+func TestReasoningMapping(t *testing.T) {
+	params := sessionUpdateParams(control.Update{
+		SessionID: "s1", Kind: control.UpdateAssistantReasoning,
+		Data: json.RawMessage(`{"text":"想"}`),
+	})
+	if params == nil {
+		t.Fatal("推理增量应产生 session/update")
+	}
+	update := params["update"].(map[string]any)
+	if update["sessionUpdate"] != "agent_thought_chunk" {
+		t.Fatalf("推理增量应映射成 agent_thought_chunk: %+v", update)
+	}
+	content := update["content"].(map[string]any)
+	if content["text"] != "想" {
+		t.Fatalf("推理文本不符: %+v", content)
+	}
+}

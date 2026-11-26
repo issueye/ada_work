@@ -18,6 +18,7 @@ import (
 	seamagent "github.com/issueye/ada_go_v2/plugins/seam/agent"
 	"github.com/issueye/ada_go_v2/plugins/seam/approval"
 	"github.com/issueye/ada_go_v2/plugins/seam/control"
+	"github.com/issueye/ada_go_v2/plugins/seam/llm"
 	"github.com/issueye/ada_go_v2/plugins/seam/seamerr"
 	"github.com/issueye/ada_go_v2/plugins/seam/session"
 )
@@ -286,12 +287,24 @@ func (s *Service) prompt(ctx context.Context, raw json.RawMessage) (json.RawMess
 			if !ok || d.SessionID != req.SessionID || d.Text == "" {
 				return nil, nil
 			}
-			streamMu.Lock()
-			streamed[streamKey{d.TurnID, d.StepID}] = true
-			streamMu.Unlock()
+			kind := ""
+			switch d.Kind {
+			case string(llm.DeltaText):
+				kind = control.UpdateAssistantDelta
+			case string(llm.DeltaReasoning):
+				kind = control.UpdateAssistantReasoning
+			default:
+				return nil, nil
+			}
+			if kind == control.UpdateAssistantDelta {
+				// 只有正文增量会抑制整段 assistant/message;推理段不能。
+				streamMu.Lock()
+				streamed[streamKey{d.TurnID, d.StepID}] = true
+				streamMu.Unlock()
+			}
 			data, _ := json.Marshal(map[string]string{"text": d.Text})
 			out <- control.Update{
-				SessionID: d.SessionID, TurnID: d.TurnID, Kind: "assistant/delta", Data: data,
+				SessionID: d.SessionID, TurnID: d.TurnID, Kind: kind, Data: data,
 			}
 			return nil, nil
 		})

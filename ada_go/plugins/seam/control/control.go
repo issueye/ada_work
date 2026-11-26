@@ -38,6 +38,14 @@ const (
 // Go 实现通过 kernel 事件发送,协议适配器订阅后映射成 ACP session/update。
 const EventUpdate = "control/update"
 
+// 控制层流式更新的 kind(Update.Kind);data 都是 {"text":...}。
+const (
+	// UpdateAssistantDelta 是 assistant 文本增量。
+	UpdateAssistantDelta = "assistant/delta"
+	// UpdateAssistantReasoning 是推理/思考增量,与正文分开,便于客户端折叠显示。
+	UpdateAssistantReasoning = "assistant/reasoning"
+)
+
 // Invoker 是控制层的语言中立服务值。
 //
 // params/result 都是 JSON;禁止在这里出现具体协议的帧或 stdio 对象。

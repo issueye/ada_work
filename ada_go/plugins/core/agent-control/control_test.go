@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -228,11 +229,14 @@ func (r *streamingRunner) Open(ctx context.Context, meta session.Meta) (session.
 }
 
 func (r *streamingRunner) Run(ctx context.Context, sess session.Session, _ string) (seamagent.Result, error) {
-	for _, part := range []string{"你", "好"} {
+	emit := func(kind, text string) {
 		r.bus.EmitContext(ctx, seamagent.EventDelta, seamagent.DeltaEvent{
-			SessionID: sess.ID(), TurnID: "t1", StepID: "s1", Kind: "text", Text: part,
+			SessionID: sess.ID(), TurnID: "t1", StepID: "s1", Kind: kind, Text: text,
 		})
 	}
+	emit("reasoning", "想")
+	emit("text", "你")
+	emit("text", "好")
 	if _, err := sess.Append(session.Event{
 		Type: session.TypeAssistantMessage, TurnID: "t1", StepID: "s1",
 		Data: json.RawMessage(`{"message":{"content":[{"kind":"text","text":"你好"}]}}`),
@@ -268,26 +272,33 @@ func TestGoControlStreamsDeltas(t *testing.T) {
 	if err != nil || turn.Text != "你好" {
 		t.Fatalf("prompt 结果不符: %+v err=%v", turn, err)
 	}
-	var texts []string
+	var texts, kinds []string
 	for {
 		select {
 		case u := <-updates:
 			if u.Kind == session.TypeAssistantMessage {
 				t.Fatalf("已有增量时不应再发整条 assistant 消息: %+v", u)
 			}
-			if u.Kind == "assistant/delta" {
+			if u.Kind == control.UpdateAssistantDelta || u.Kind == control.UpdateAssistantReasoning {
 				var d struct {
 					Text string `json:"text"`
 				}
 				_ = json.Unmarshal(u.Data, &d)
 				texts = append(texts, d.Text)
+				kinds = append(kinds, u.Kind)
 			}
 		default:
 			goto drained
 		}
 	}
 drained:
-	if len(texts) != 2 || texts[0] != "你" || texts[1] != "好" {
+	wantKinds := []string{
+		control.UpdateAssistantReasoning, control.UpdateAssistantDelta, control.UpdateAssistantDelta,
+	}
+	if len(kinds) != len(wantKinds) || strings.Join(kinds, ",") != strings.Join(wantKinds, ",") {
+		t.Fatalf("增量类型不符: %+v", kinds)
+	}
+	if len(texts) != 3 || texts[0] != "想" || texts[1] != "你" || texts[2] != "好" {
 		t.Fatalf("增量顺序不符: %+v", texts)
 	}
 }
@@ -415,5 +426,75 @@ func TestGoControlHistory(t *testing.T) {
 	}
 	if _, err := c.History(context.Background(), "missing"); err == nil {
 		t.Fatal("未知会话的 history 应失败")
+	}
+}
+
+// reasoningOnlyRunner 只发推理增量、不流正文;整段 assistant 消息不能被抑制。
+type reasoningOnlyRunner struct {
+	reg *session.Registry
+	bus *kernel.Context
+}
+
+func (r *reasoningOnlyRunner) Open(ctx context.Context, meta session.Meta) (session.Session, error) {
+	return r.reg.Open(ctx, "", meta)
+}
+
+func (r *reasoningOnlyRunner) Run(ctx context.Context, sess session.Session, _ string) (seamagent.Result, error) {
+	r.bus.EmitContext(ctx, seamagent.EventDelta, seamagent.DeltaEvent{
+		SessionID: sess.ID(), TurnID: "t1", StepID: "s1", Kind: "reasoning", Text: "想",
+	})
+	if _, err := sess.Append(session.Event{
+		Type: session.TypeAssistantMessage, TurnID: "t1", StepID: "s1",
+		Data: json.RawMessage(`{"message":{"content":[{"kind":"text","text":"答案"}]}}`),
+	}); err != nil {
+		return seamagent.Result{}, err
+	}
+	return seamagent.Result{TurnID: "t1", Text: "答案"}, nil
+}
+
+func TestGoControlReasoningDoesNotSuppressMessage(t *testing.T) {
+	rr := &reasoningOnlyRunner{}
+	app, c := mount(t, func(reg *session.Registry) seamagent.Runner {
+		rr.reg = reg
+		return rr
+	})
+	rr.bus = app.Root()
+	info, err := c.Create(context.Background(), control.CreateRequest{Title: "reasoning"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updates := make(chan control.Update, 16)
+	dispose := app.Root().On(control.EventUpdate, func(_ context.Context, _ *kernel.Context, args []any) (any, error) {
+		if len(args) > 0 {
+			if u, ok := args[0].(control.Update); ok {
+				updates <- u
+			}
+		}
+		return nil, nil
+	})
+	defer func() { _ = dispose(context.Background()) }()
+
+	if _, err := c.Prompt(context.Background(), control.PromptRequest{SessionID: info.ID, Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	var reasoning, message int
+	for {
+		select {
+		case u := <-updates:
+			switch u.Kind {
+			case control.UpdateAssistantReasoning:
+				reasoning++
+			case session.TypeAssistantMessage:
+				message++
+			case control.UpdateAssistantDelta:
+				t.Fatalf("没有正文增量时不应发 assistant/delta: %+v", u)
+			}
+		default:
+			goto drained
+		}
+	}
+drained:
+	if reasoning != 1 || message != 1 {
+		t.Fatalf("推理=1 且整段消息=1,实际 reasoning=%d message=%d", reasoning, message)
 	}
 }
