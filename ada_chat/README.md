@@ -5,8 +5,12 @@
 [Lobe MyGo](https://mygo.lobehub.com) 的组件与 token。
 
 ada_chat 是**宿主/桌面壳**：它管理「工作区 → 进程实例」、机器人、对话和进程生命周期；
-真正的 agent 运行在 ada_go_v2 的进程里，两边通过 seam RPC v1 通讯。启动时没有预置对话或固定回答，
-需要配置一个外部 runtime。
+真正的 agent 运行在外部进程里，支持两种协议：
+
+- **RPC**（默认）：`ada_go` 的 `ada-rpc-agent`，通过 seam RPC v1 通讯；
+- **ACP**：`ada acp` 或任意 ACP agent，通过 stdio 上的 JSON-RPC 2.0 通讯。
+
+启动时没有预置对话或固定回答，需要配置一个外部 runtime。
 
 > 产品方向、职责边界和待补能力见 [docs/product-analysis.md](docs/product-analysis.md)
 > （个人机器人助手 / 项目群组）。
@@ -14,14 +18,22 @@ ada_chat 是**宿主/桌面壳**：它管理「工作区 → 进程实例」、�
 ## 运行
 
 ```powershell
-# 1. 构建 ada_go 的 RPC bot 宿主（模块名是 ada_go_v2，目录名是 ada_go）
+# 1. 构建 ada_go 的 runtime
 Push-Location ..\ada_go
-go build -o bin\ada-rpc-agent.exe .\cmd\ada-rpc-agent
+go build -o bin\ada-rpc-agent.exe .\cmd\ada-rpc-agent   # RPC 模式
+go build -o bin\ada.exe .\cmd\ada                        # ACP 模式
 Pop-Location
 
 # 2. 启动 ada_chat，在设置里配置 Agent 与模型供应商
 go run ./cmd/ada_chat
 ```
+
+Agent 设置里新增 **运行协议**：
+
+- **RPC**：Agent 路径选 `ada-rpc-agent.exe`，preset 选 `agent.preset.json`；
+- **ACP**：Agent 路径选 `ada.exe`，preset 选 ACP 用的 `*.preset.json`；
+  ada_chat 默认以 `acp --preset <preset>` 启动它。接其它 ACP agent 时用
+  `ADA_BOT_RUNTIME_ARGS` 覆盖整组参数（JSON 字符串数组）。
 
 设置分成了三个独立弹窗，入口在**左下角用户区的 Popover**（点用户名弹出），
 标题栏的齿轮仍然直接打开「设置（常规）」：
@@ -32,8 +44,9 @@ macOS/Linux 仍使用隐藏系统标题栏（TitleBarHidden），保留系统自
 Windows 的自绘最大化按钮不提供 Windows 11 的 Snap Layouts 悬浮面板；窗口拖动与
 双击标题栏最大化/还原仍可用。
 
-- **Agent**（Popover → Agent）：`Agent 路径`（`ada-rpc-agent` 可执行文件）与 `Agent preset`
-  （`agent.preset.json`），都可以直接输入或打开文件选择器；
+- **Agent**（Popover → Agent）：`运行协议`（RPC / ACP）、`Agent 路径`
+  （`ada-rpc-agent` 或 `ada`）与 `Agent preset`（`agent.preset.json` / ACP preset），
+  路径都可以直接输入或打开文件选择器；
 - **供应商**（Popover → 供应商）：**左右布局的供应商管理**——左边是供应商列表（可添加/切换/删除），
   右边是两页签：
   - **供应商信息**：名称、类型（跟随 preset / OpenAI 兼容 / Replay）、Endpoint、API Key，
@@ -57,7 +70,7 @@ Endpoint 格式），所以一处填错不会挡住另一处的保存。
 `os.UserConfigDir()/ada_chat/config.json`（Windows 为 `%AppData%\ada_chat\config.json`），
 下次启动自动加载。保存过的设置优先；对应项留空时回落到环境变量：
 
-`ADA_BOT_RUNTIME` / `ADA_GO_AGENT_PRESET` / `ADA_LLM_PROVIDER` / `ADA_LLM_ENDPOINT` / `ADA_LLM_MODEL`。
+`ADA_BOT_RUNTIME` / `ADA_BOT_AGENT_KIND` / `ADA_GO_AGENT_PRESET` / `ADA_LLM_PROVIDER` / `ADA_LLM_ENDPOINT` / `ADA_LLM_MODEL`。
 
 机器人与对话另行保存在同目录的 `state.json`：添加/编辑机器人、发送消息、一轮结束、
 改名/删除对话以及关窗时都会原子写入；下次启动自动恢复侧栏机器人、对话与消息（含工具卡片）。
@@ -70,14 +83,25 @@ API Key 保存在这个本机配置文件中（文件权限 0600）；不想落�
 设置影响的是**新启动的工作区进程**；已在运行的机器人不会自动重建。要让当前机器人立即换用新
 runtime/供应商，重启应用即可（关闭时会回收所有进程）。
 
-如果不想在界面里配置，也可以先用环境变量启动一次：
+没有界面配置时也可以用环境变量启动：
 
 ```powershell
+# RPC
+$env:ADA_BOT_AGENT_KIND = "rpc"
 $env:ADA_BOT_RUNTIME = "E:\codes\go_projects\ada_work\ada_go\bin\ada-rpc-agent.exe"
 $env:ADA_GO_AGENT_PRESET = "E:\codes\go_projects\ada_work\ada_go\examples\agent\agent.preset.json"
 $env:ADA_LLM_PROVIDER = "replay"
 go run ./cmd/ada_chat
+
+# ACP
+$env:ADA_BOT_AGENT_KIND = "acp"
+$env:ADA_BOT_RUNTIME = "E:\codes\go_projects\ada_work\ada_go\bin\ada.exe"
+$env:ADA_GO_AGENT_PRESET = "E:\codes\go_projects\ada_work\ada_go\examples\acp\acp.preset.json"
+go run ./cmd/ada_chat
 ```
+
+ACP 示例 preset 的 replay 路径按机器人工作目录解析：把工作目录选为 `ada_go` 根目录，
+或把 preset 里的 `examples/acp/replay.jsonl` 改成绝对路径。
 
 首次启动是空工作台；点「添加机器人」，选择、输入或浏览一个**工作目录**，再发送第一条消息。
 
@@ -123,8 +147,9 @@ ada_chat/
 │   │   ├── tools.go            # 工具调用类型与 chat/tool 状态
 │   │   └── state.go            # 机器人/对话的 state.json 读写与重启后归一化
 │   ├── rpc/                    # seam RPC v1：帧/握手/调用/事件/取消/心跳 + 传输
+│   ├── acp/                    # ACP 客户端：stdio JSON-RPC 2.0、session/update、反向权限
 │   ├── bot/                    # 工作区进程管理
-│   │   ├── supervisor.go       # 工作目录 → 一个进程/一个 peer；bot 是成员
+│   │   ├── supervisor.go       # 工作目录 → 一个进程/一个连接；RPC 与 ACP 两条路径
 │   │   ├── endpoint.go         # 每次启动的私有 pipe/unix 地址和 token
 │   │   └── bot.go              # runtime 环境契约
 │   └── ui/                     # 视图，读 app 并用 MyGo + Lobe 绘制
@@ -159,10 +184,12 @@ Runtime 契约（ada_chat 启动外部进程时设置）：
 
 | 变量 | 说明 |
 |---|---|
-| `ADA_BOT_ADDR` | `pipe://name` / `unix:///abs/path` / `tcp://host:port` |
-| `ADA_BOT_TOKEN` | RPC token，只走环境 |
+| `ADA_BOT_ADDR` | `pipe://name` / `unix:///abs/path` / `tcp://host:port`（仅 RPC） |
+| `ADA_BOT_TOKEN` | RPC token，只走环境（仅 RPC） |
 | `ADA_BOT_NAME` / `ADA_BOT_MODEL` / `ADA_BOT_INSTRUCTION` | 首个机器人的配置（共享进程的初始配置） |
 | `ADA_BOT_WORKSPACE` | 选中目录；进程的 `cwd` 也是它 |
+
+`ADA_BOT_AGENT_KIND` 与 `ADA_BOT_RUNTIME_ARGS` 只由 ada_chat 读取，不注入子进程。
 
 RPC 方法：
 
@@ -172,9 +199,30 @@ RPC 方法：
 | `chat.send` | `{turn, text, botId, botName, instruction, sessionId}` | `{turn, text}`；期间 `chat/reasoning`、`chat/delta`、`chat/tool`、`chat/approval`、`chat/error`，最后 `chat/done` |
 | `chat.approve` | `{id, allow, reason}` | `{id, allow}`；回答一次 `chat/approval`，未知 id 返回错误 |
 
+### ACP 模式
+
+`AgentKind=acp` 时 supervisor 不建 RPC 端点，而是直接持有子进程的 stdin/stdout：
+
+| ACP 方法 | 用途 |
+|---|---|
+| `initialize` | 声明客户端能力（当前不声明 fs/terminal） |
+| `session/new` | 每个 ada_chat 对话懒创建一个 agent session，`cwd` 是机器人工作目录 |
+| `session/prompt` | 发送一轮文本 |
+| `session/cancel` | 用户点「停止生成」时发通知 |
+| `session/update` | `agent_message_chunk` / `agent_thought_chunk` / `tool_call` / `tool_call_update` 映射到消息、思考块与工具卡片 |
+| `session/request_permission` | agent → 宿主反向请求，接到现有「需要审批」面板；允许/拒绝回 `selected`，超时回 `cancelled` |
+
+限制：`plan`、`user_message_chunk` 与 ACP 的 fs/terminal 反向能力暂未映射；接其它 ACP agent 时，
+只有 `session/new|prompt|cancel`、`session/update` 与 `session/request_permission` 是必需的。
+ACP session 不落盘：重启 ada_chat 后旧对话会重新 `session/new`，不会恢复 agent 侧上下文。
+ACP 期间的机器人身份/系统提示来自 preset，不能像 RPC 那样按机器人逐轮替换。
+ACP 进程的 `cwd` 是机器人工作目录，preset 里的相对路径（例如 replay 脚本）会按这个 cwd 解析，
+建议写绝对路径。
+
 ## 流式回答与工具卡片
 
-`ada-rpc-agent` 现在把 agent-loop 的 `llm.EventStream` 与 `tools/*` 事件实时转发给 ada_chat：
+RPC 模式下 `ada-rpc-agent` 把 agent-loop 的 `llm.EventStream` 与 `tools/*` 事件实时转发给
+ada_chat；ACP 模式下则由 `session/update` 提供同等粒度的增量：
 
 - 文本增量走 `chat/delta`，`App.BotDelta` 追加到消息，`Animated` Markdown 边到边渲染；
 - 模型的思考内容走 `chat/reasoning`，`App.BotReasoning` 按顺序保留为独立的思考块，
@@ -199,10 +247,12 @@ RPC 方法：
 - 一轮回答按真实顺序保存：`Message.Parts` 记录「文字 → 工具 → 文字」的先后，
   界面按这个顺序渲染，不再固定把工具卡片放在文字上方；工具并行执行时事件可能乱序，
   卡片顺序按首次出现固定，结果回填到对应 id。
-- 工具或沙箱要越权时，runtime 发 `chat/approval`；界面弹出「需要审批」面板，显示机器人、发起方、
-  目标与原因，选「允许一次」/「拒绝」后经 `chat.approve` 回写。超时未答复由 runtime 按拒绝处理
+- 工具或沙箱要越权时，runtime 发 `chat/approval`；ACP agent 则发
+  `session/request_permission`。界面都弹出「需要审批」面板，显示机器人、发起方、
+  目标与原因，选「允许一次」/「拒绝」后回写。超时未答复由 runtime 按拒绝处理
   （fail-closed），面板会随该轮结束自动关闭。
-- 本轮失败时 runtime 先发 `chat/error`，对话直接显示可读原因；只有事件没到（进程断开等）才回落到
+- 本轮失败时 runtime 先发 `chat/error`，对话直接显示可读原因；ACP 模式下来自
+  `session/prompt` 的错误/取消同样落到这条路径。只有事件没到（进程断开等）才回落到
   RPC 错误文本与机器人日志末行。
 
 回答里出现 `run_shell` 卡片，说明这次 preset 启用了 ada_go_v2 的 `shell-helper` 插件。命令实际上由
@@ -257,6 +307,19 @@ go test ./internal/rpc -run TestInterop -v -count=1
   新会话第一轮只带 `system + user`，不带旧会话的模型上下文；
 - `TestInteropPerBotPersona`：mock OpenAI 端点捕获系统提示，断言同一进程里的第二个机器人看到
   自己的名字与指令，而不是进程级默认身份。
+
+ACP 互操作（先构建 `ada_go/bin/ada.exe`）：
+
+```powershell
+$env:ADA_ACP_INTEROP_AGENT  = "E:\codes\go_projects\ada_work\ada_go\bin\ada.exe"
+$env:ADA_ACP_INTEROP_PRESET = "E:\codes\go_projects\ada_work\ada_go\examples\acp\acp.preset.json"
+go test ./internal/bot -run TestACPInterop -v -count=1
+```
+
+- `TestACPInterop`：真实 `ada acp` 进程 → initialize → session/new → prompt →
+  `agent_message_chunk`/`tool_call` → 最终回答，断言文本与工具卡片都落到会话；
+- `TestACPInteropPermission`：在 ACP preset 上叠加 `approval-gate` 让 `tool_find` 需要审批，
+  测试自动允许一次，验证 `session/request_permission` 反向链路。
 
 手工/临时探针验证过的行为：
 

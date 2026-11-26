@@ -5,6 +5,18 @@ import (
 	"testing"
 )
 
+// TestAgentKindValue 守住运行协议归一化:空/未知值按 RPC,只有 acp 走 ACP。
+func TestAgentKindValue(t *testing.T) {
+	cases := map[string]string{
+		"": "rpc", "rpc": "rpc", "ACP": "acp", "acp": "acp", "mystery": "rpc",
+	}
+	for in, want := range cases {
+		if got := (Prefs{AgentKind: in}).AgentKindValue(); got != want {
+			t.Fatalf("AgentKindValue(%q) = %q,期望 %q", in, got, want)
+		}
+	}
+}
+
 // TestEnsureProvidersMigratesLegacy 守住旧配置迁移:单供应商字段变成一条列表记录,
 // 并回填 ActiveProvider 与模型。
 func TestEnsureProvidersMigratesLegacy(t *testing.T) {

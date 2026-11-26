@@ -106,6 +106,7 @@ func (u *UI) openProviderSettings() {
 func (u *UI) savePrefs(c *mui.Context, scope string) {
 	v := u.settings.Values
 	v.Name = strings.TrimSpace(v.Name)
+	v.AgentKind = v.AgentKindValue()
 	v.RuntimePath = strings.TrimSpace(v.RuntimePath)
 	v.AgentPreset = strings.TrimSpace(v.AgentPreset)
 	v.Provider = strings.ToLower(strings.TrimSpace(v.Provider))
@@ -136,6 +137,11 @@ func (u *UI) savePrefs(c *mui.Context, scope string) {
 }
 
 func (u *UI) checkAgent(c *mui.Context, v *app.Prefs) bool {
+	if v.AgentKindValue() == app.AgentACP && v.AgentPreset == "" &&
+		strings.TrimSpace(os.Getenv("ADA_BOT_RUNTIME_ARGS")) == "" {
+		u.fieldError(c, "preset", "ACP 模式需要 Agent preset 或 ADA_BOT_RUNTIME_ARGS")
+		return false
+	}
 	if v.RuntimePath != "" {
 		abs, err := filepath.Abs(v.RuntimePath)
 		if err != nil {
@@ -192,20 +198,41 @@ func (u *UI) agentPane(c *mui.Context) {
 		Variant: form.Borderless, Layout: form.Vertical, Gap: 8,
 	}, func() {
 		form.Group(c, f, form.GroupProps{
-			Title: "ada_go_v2 Agent",
+			Title: "Agent 运行时",
 			Desc:  "留空时回落到环境变量 ADA_BOT_RUNTIME / ADA_GO_AGENT_PRESET",
 			Fixed: true,
 		}, func() {
 			form.Field(c, f, form.FieldProps{
+				Name: "agentKind", Label: "运行协议",
+				Desc:  "RPC 用 ada-rpc-agent；ACP 用 ada acp 或任意 ACP agent",
+				Value: f.Values.AgentKind,
+			}, func() {
+				field.Select(c, &f.Values.AgentKind, field.SelectProps{
+					Variant: field.InputOutlined,
+					Options: []field.SelectOption{
+						{Value: app.AgentRPC, Label: "RPC（ada-rpc-agent）", Icon: lucide.Bot()},
+						{Value: app.AgentACP, Label: "ACP（ada acp / 任意 ACP agent）", Icon: lucide.Terminal()},
+					},
+				}).Label("运行协议")
+			})
+			runtimeDesc := "ada-rpc-agent 可执行文件；新机器人的工作区进程使用它启动"
+			runtimePlaceholder := "选择 ada-rpc-agent.exe"
+			presetDesc := "传给 runtime 的 agent.preset.json"
+			if f.Values.AgentKindValue() == app.AgentACP {
+				runtimeDesc = "ada 可执行文件（或其他 ACP agent）；按 acp --preset 启动"
+				runtimePlaceholder = "选择 ada.exe"
+				presetDesc = "ACP 会话装配用的 preset；传给 ada acp --preset"
+			}
+			form.Field(c, f, form.FieldProps{
 				Name: "runtime", Label: "Agent 路径",
-				Desc:  "ada-rpc-agent 可执行文件；新机器人的工作区进程使用它启动",
+				Desc:  runtimeDesc,
 				Value: f.Values.RuntimePath,
 			}, func() {
-				u.settingsPath(c, &f.Values.RuntimePath, "runtime", "Agent 路径", "选择 ada-rpc-agent.exe")
+				u.settingsPath(c, &f.Values.RuntimePath, "runtime", "Agent 路径", runtimePlaceholder)
 			})
 			form.Field(c, f, form.FieldProps{
 				Name: "preset", Label: "Agent preset",
-				Desc:  "传给 runtime 的 agent.preset.json",
+				Desc:  presetDesc,
 				Value: f.Values.AgentPreset,
 			}, func() {
 				u.settingsPath(c, &f.Values.AgentPreset, "preset", "Agent preset", "选择 agent.preset.json")
