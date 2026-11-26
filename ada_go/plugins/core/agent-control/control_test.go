@@ -498,3 +498,35 @@ drained:
 		t.Fatalf("推理=1 且整段消息=1,实际 reasoning=%d message=%d", reasoning, message)
 	}
 }
+
+func TestGoControlRejectsConcurrentPrompt(t *testing.T) {
+	started := make(chan struct{})
+	_, c := mount(t, func(reg *session.Registry) seamagent.Runner {
+		return cancelRunner{reg: reg, started: started}
+	})
+	info, err := c.Create(context.Background(), control.CreateRequest{Title: "one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = c.Prompt(context.Background(), control.PromptRequest{SessionID: info.ID, Text: "first"})
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("第一个 prompt 没有启动")
+	}
+	if _, err := c.Prompt(context.Background(), control.PromptRequest{SessionID: info.ID, Text: "second"}); err == nil {
+		t.Fatal("并发 prompt 应被拒绝")
+	}
+	if err := c.Cancel(context.Background(), info.ID); err != nil {
+		t.Fatalf("cancel 失败: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("取消后第一个 prompt 没有返回")
+	}
+}

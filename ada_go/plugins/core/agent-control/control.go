@@ -195,6 +195,12 @@ func (s *Service) prompt(ctx context.Context, raw json.RawMessage) (json.RawMess
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	s.mu.Lock()
+	if m.cancel != nil {
+		// 同一会话同时只允许一轮;并发 prompt 会让事件、取消与历史互相踩踏。
+		s.mu.Unlock()
+		cancel()
+		return nil, control.Invalid("会话已有进行中的 prompt: " + req.SessionID)
+	}
 	m.seq++
 	seq := m.seq
 	m.cancel = cancel

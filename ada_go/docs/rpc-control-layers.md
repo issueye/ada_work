@@ -95,7 +95,7 @@ prompt 未返回时到达对端（不是结束后补发）。
 |---|---|---|
 | `plugins/seam/control` | 2 | ✅ 契约、`Client`、`Invoker`、Go/TS 契约测试 |
 | `platform/bridge`（control 包装） | 2 适配 | ✅ TS `ctx.provide("control")` 自动包装 |
-| `core/agent-control` | 2 实现 | ✅ `agent.runner` → `control.Invoker`；create/load/list/prompt/history/cancel/permission/close；token 级 `assistant/delta`；取消返回 `cancelled`；`load` 可按 id 恢复 |
+| `core/agent-control` | 2 实现 | ✅ `agent.runner` → `control.Invoker`；create/load/list/prompt/history/cancel/permission/close；token 级 `assistant/delta`；取消返回 `cancelled`；`load` 可按 id 恢复；同一会话单轮串行 |
 | `seam/agent` | 能力契约 | ✅ `Runner`（Open/Run） |
 | `provider/rpc-json` | 3+4 | ◐ 现有 v1 协议；尚未拆成 control 适配 + frame 通道 |
 | `provider/control-rpc` | 3 | ✅ v1 方法 ↔ `control.Invoker`（Client + Register）；已用真实 rpc-json + tcp 跑通端到端 |
@@ -180,6 +180,14 @@ session/update      <- control/update 事件
 
 `session/cancel` 取消当前轮后，`session/prompt` 返回 `stopReason: "cancelled"`
 （不是 JSON-RPC 错误）；其它失败才是错误。
+
+`session/prompt` 的内容块只接受 `text` 与 `resource_link`：后者渲染成
+`[file] 名称 <uri> (mime)`，由 agent 用工具读取；`image`/`audio`/
+`embeddedContext` 按 `initialize` 声明的能力拒绝，不做静默丢弃。控制层的
+`EINVALID` 映射成 JSON-RPC `-32602`，其余错误映射成 `-32603`。
+
+同一会话同时只允许一轮 prompt：第二个并发 `session/prompt` 返回 `EINVALID`，
+避免事件、取消与历史互相踩踏。
 
 `session/load` 的响应是 `null`：先按 `session.history` 回放 `session/update`，再返回。
 回放把 `user/message` 映射成 `user_message_chunk` 并跳过 `turn/*`、`step/*` 等

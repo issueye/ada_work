@@ -14,6 +14,7 @@ package controlacp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -143,12 +144,60 @@ func (e *Endpoint) loadSession(ctx context.Context, raw json.RawMessage) (any, e
 	return nil, nil
 }
 
+type promptPart struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	URI      string `json:"uri,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Title    string `json:"title,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
+}
+
 type promptParams struct {
-	SessionID string `json:"sessionId"`
-	Prompt    []struct {
-		Type string `json:"type"`
-		Text string `json:"text,omitempty"`
-	} `json:"prompt"`
+	SessionID string       `json:"sessionId"`
+	Prompt    []promptPart `json:"prompt"`
+}
+
+// renderPrompt 把 ACP prompt 内容块转成一条用户文本。
+//
+// 只接受 text 与 resource_link:text 直接拼接,resource_link 渲染成路径提示,
+// 由 agent 用工具读取;image/audio/embeddedContext 未实现,按 ACP 声明的能力
+// 拒绝而不是静默丢弃。unknown 类型同样拒绝,避免客户端以为内容已送达。
+func renderPrompt(parts []promptPart) (string, error) {
+	var b strings.Builder
+	for _, part := range parts {
+		switch part.Type {
+		case "text":
+			b.WriteString(part.Text)
+		case "resource_link":
+			label := part.Title
+			if label == "" {
+				label = part.Name
+			}
+			if label == "" {
+				label = part.URI
+			}
+			if part.URI == "" && label == "" {
+				return "", fmt.Errorf("resource_link 缺少 uri")
+			}
+			b.WriteString("\n[file] ")
+			b.WriteString(label)
+			if part.URI != "" && part.URI != label {
+				b.WriteString(" <" + part.URI + ">")
+			}
+			if part.MimeType != "" {
+				b.WriteString(" (" + part.MimeType + ")")
+			}
+			b.WriteString("\n")
+		case "image", "audio":
+			return "", fmt.Errorf("未实现 %s prompt 内容", part.Type)
+		case "resource":
+			return "", fmt.Errorf("未实现 embeddedContext prompt 内容")
+		default:
+			return "", fmt.Errorf("未知 prompt 类型: %s", part.Type)
+		}
+	}
+	return strings.TrimSpace(b.String()), nil
 }
 
 func (e *Endpoint) prompt(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -156,11 +205,9 @@ func (e *Endpoint) prompt(ctx context.Context, raw json.RawMessage) (any, error)
 	if err := json.Unmarshal(raw, &p); err != nil || p.SessionID == "" {
 		return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams, Message: "session/prompt 参数非法"}
 	}
-	text := ""
-	for _, part := range p.Prompt {
-		if part.Type == "text" {
-			text += part.Text
-		}
+	text, err := renderPrompt(p.Prompt)
+	if err != nil {
+		return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams, Message: err.Error()}
 	}
 	if text == "" {
 		return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeInvalidParams, Message: "session/prompt 需要 text"}
@@ -463,5 +510,9 @@ func rpcError(err error) *jsonrpc2.Error {
 	if err == nil {
 		return nil
 	}
-	return &jsonrpc2.Error{Code: jsonrpc2.CodeInternalError, Message: err.Error()}
+	code := jsonrpc2.CodeInternalError
+	if seamerr.Is(err, seamerr.ErrInvalid) {
+		code = jsonrpc2.CodeInvalidParams
+	}
+	return &jsonrpc2.Error{Code: code, Message: err.Error()}
 }

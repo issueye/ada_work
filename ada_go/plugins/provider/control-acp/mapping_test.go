@@ -2,8 +2,10 @@ package controlacp
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/issueye/ada_go_v2/plugins/provider/jsonrpc2"
 	"github.com/issueye/ada_go_v2/plugins/seam/control"
 )
 
@@ -145,5 +147,43 @@ func TestReasoningMapping(t *testing.T) {
 	content := update["content"].(map[string]any)
 	if content["text"] != "想" {
 		t.Fatalf("推理文本不符: %+v", content)
+	}
+}
+
+func TestRenderPrompt(t *testing.T) {
+	text, err := renderPrompt([]promptPart{
+		{Type: "text", Text: "看看这个文件"},
+		{Type: "resource_link", URI: "file:///x/a.txt", Name: "a.txt", MimeType: "text/plain"},
+	})
+	if err != nil {
+		t.Fatalf("resource_link 应被接受: %v", err)
+	}
+	if !strings.Contains(text, "看看这个文件") || !strings.Contains(text, "[file] a.txt") ||
+		!strings.Contains(text, "file:///x/a.txt") {
+		t.Fatalf("prompt 渲染不符: %q", text)
+	}
+
+	for _, part := range []promptPart{
+		{Type: "image"},
+		{Type: "audio"},
+		{Type: "resource"},
+		{Type: "mystery"},
+		{Type: "resource_link"},
+	} {
+		if _, err := renderPrompt([]promptPart{part}); err == nil {
+			t.Fatalf("类型 %q 应被拒绝", part.Type)
+		}
+	}
+}
+
+func TestRPCErrorMapping(t *testing.T) {
+	if e := rpcError(control.Invalid("bad")); e == nil || e.Code != jsonrpc2.CodeInvalidParams {
+		t.Fatalf("EINVALID 应映射成 InvalidParams: %+v", e)
+	}
+	if e := rpcError(control.Unavailable("down")); e == nil || e.Code != jsonrpc2.CodeInternalError {
+		t.Fatalf("EUNAVAILABLE 应映射成 InternalError: %+v", e)
+	}
+	if e := rpcError(nil); e != nil {
+		t.Fatalf("nil 应返回 nil: %+v", e)
 	}
 }
