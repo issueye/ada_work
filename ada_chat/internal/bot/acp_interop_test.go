@@ -86,6 +86,51 @@ func (l *lockedApp) todo(sessionID int) *app.Todo {
 //
 //	ADA_ACP_INTEROP_AGENT  ada(.exe) 路径
 //	ADA_ACP_INTEROP_PRESET examples/acp/acp.preset.json 的绝对路径
+//
+// interopPreset 用给定 preset 克隆出一份临时 preset:插件目录指向统一目录
+// (preset 所在模块根的 plugins/),回放脚本按绝对路径写死,再叠 extras。
+//
+// preset 位于 examples/<示例>/ 下时,模块根是它的上两级;发布包里则是 presets/ 的上一级。
+func interopPreset(t *testing.T, presetPath string, extraEnable []string, extraPatch map[string]any) string {
+	t.Helper()
+	base := filepath.Dir(presetPath)
+	root := filepath.Clean(filepath.Join(base, "..", ".."))
+	raw, err := os.ReadFile(presetPath)
+	if err != nil {
+		t.Fatalf("读取 preset 失败: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("解析 preset 失败: %v", err)
+	}
+	doc["plugins"] = []string{filepath.Join(root, "plugins")}
+	if len(extraEnable) > 0 {
+		enable, _ := doc["enable"].([]any)
+		for _, id := range extraEnable {
+			enable = append(enable, id)
+		}
+		doc["enable"] = enable
+	}
+	patch, _ := doc["patch"].(map[string]any)
+	if patch == nil {
+		patch = map[string]any{}
+	}
+	patch["llm-replay"] = map[string]any{"path": filepath.Join(base, "replay.jsonl")}
+	patch["agent-loop"] = map[string]any{"model": "replay"}
+	for k, v := range extraPatch {
+		patch[k] = v
+	}
+	doc["patch"] = patch
+	out, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(t.TempDir(), "preset.json")
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return tmp
+}
 func TestACPInterop(t *testing.T) {
 	agent := strings.TrimSpace(os.Getenv("ADA_ACP_INTEROP_AGENT"))
 	preset := strings.TrimSpace(os.Getenv("ADA_ACP_INTEROP_PRESET"))
@@ -99,24 +144,10 @@ func TestACPInterop(t *testing.T) {
 		t.Fatalf("preset 不存在: %v", err)
 	}
 	workspace := t.TempDir()
-	// 示例 preset 里的 replay 路径相对进程 cwd;ACP 进程的 cwd 必须是机器人工
-	// 作目录,所以测试用绝对路径生成一份临时 preset。
-	base := filepath.Dir(preset)
-	tmpPreset := filepath.Join(t.TempDir(), "preset.json")
-	body, err := json.Marshal(map[string]any{
-		"name":    "acp-interop",
-		"plugins": []string{filepath.Join(base, "plugins")},
-		"patch": map[string]any{
-			"llm-replay": map[string]any{"path": filepath.Join(base, "replay.jsonl")},
-			"agent-loop": map[string]any{"model": "replay"},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(tmpPreset, body, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	// 统一插件目录后,示例 preset 自己就带相对模块根的 plugins 路径;这里仍克隆一份临时
+	// preset,把插件目录与回放路径写成绝对路径——ACP 进程的 cwd 是机器人工作目录,
+	// 临时 preset 又不在模块里,相对路径会失效。
+	tmpPreset := interopPreset(t, preset, nil, nil)
 	restoreState := app.SetStatePath(filepath.Join(t.TempDir(), "state.json"))
 	t.Cleanup(restoreState)
 	state := &app.App{Prefs: app.Prefs{
@@ -204,26 +235,10 @@ func TestACPInteropPermission(t *testing.T) {
 		t.Skip("未配置 ADA_ACP_INTEROP_AGENT / ADA_ACP_INTEROP_PRESET")
 	}
 	workspace := t.TempDir()
-	base := filepath.Dir(preset)
-	tmpPreset := filepath.Join(t.TempDir(), "preset.json")
-	body, err := json.Marshal(map[string]any{
-		"name": "acp-interop-permission",
-		"plugins": []string{
-			filepath.Join(base, "plugins"),
-			filepath.Join(base, "..", "agent", "plugins", "approval-gate"),
-		},
-		"patch": map[string]any{
-			"llm-replay":    map[string]any{"path": filepath.Join(base, "replay.jsonl")},
-			"agent-loop":    map[string]any{"model": "replay"},
-			"approval-gate": map[string]any{"tools": []string{"tool_find"}, "backend": "acp-client", "timeoutMs": 20000},
-		},
+	// 在统一插件目录上追加 approval-gate:让 tool_find 走 ACP 权限请求。
+	tmpPreset := interopPreset(t, preset, []string{"approval-gate"}, map[string]any{
+		"approval-gate": map[string]any{"tools": []string{"tool_find"}, "backend": "acp-client", "timeoutMs": 20000},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(tmpPreset, body, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	restoreState := app.SetStatePath(filepath.Join(t.TempDir(), "state.json"))
 	t.Cleanup(restoreState)
 	state := &app.App{Prefs: app.Prefs{
