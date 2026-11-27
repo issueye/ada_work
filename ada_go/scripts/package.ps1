@@ -137,7 +137,7 @@ try {
     }
 
     $agentBase = @(
-        "agent-loop", "compaction-basic", "fs-local", "llm-replay",
+        "agent-loop", "plan", "compaction-basic", "fs-local", "llm-replay",
         "seam-fs", "seam-llm", "seam-prompts", "seam-session", "seam-tools",
         "session-memory", "session-stats", "system-prompt", "text-helper", "memory-helper", "tool-helper"
     )
@@ -200,7 +200,11 @@ try {
         # 记忆工具默认随包启用;模型需要知道什么时候写入/检索/忘记。
         "memory-helper" = @{ autoRecall = $true }
         "system-prompt" = @{
-            tools = "长期记忆:`n- 用户要求记住事实/偏好时调用 memory_write;`n- 回答涉及既往信息时先 memory_search 再引用;`n- 用户要求忘记时调用 memory_forget。`n工具发现:`n- 工具较多或不确定用哪个时,先 tool_find 查询;`n- 已知工具名时用 tool_exec 按名字调用,参数放在 args 对象里。`n插件开发:`n- 用户要新建插件时用 plugin_scaffold(只生成 TS,生成即可被 preset 装配);`n- 查看/体检已有插件用 plugin_list / plugin_show;`n- 把插件接入 preset 用 plugin_preset。`n联网:`n- 抓取网页用 http_request(默认把 HTML 清洗成正文,需要原文时传 clean:false);`n- 搜索网页用 http_search(DeepSeek 需 key,无 key 自动用 DuckDuckGo)。`n技能:`n- 先 skill_list 查可用技能;`n- 需要步骤细节时 skill_show 读 SKILL.md(可带 file 读附带文件);`n- 新建技能用 skill_scaffold。"
+            tools = "长期记忆:`n- 用户要求记住事实/偏好时调用 memory_write;`n- 回答涉及既往信息时先 memory_search 再引用;`n- 用户要求忘记时调用 memory_forget。`n计划:
+- 多步骤任务先 plan_set 建计划;
+- 推进到某一步时用 plan_update 更新状态与结果;
+- 需要复述当前计划用 plan_show。
+工具发现:`n- 工具较多或不确定用哪个时,先 tool_find 查询;`n- 已知工具名时用 tool_exec 按名字调用,参数放在 args 对象里。`n插件开发:`n- 用户要新建插件时用 plugin_scaffold(只生成 TS,生成即可被 preset 装配);`n- 查看/体检已有插件用 plugin_list / plugin_show;`n- 把插件接入 preset 用 plugin_preset。`n联网:`n- 抓取网页用 http_request(默认把 HTML 清洗成正文,需要原文时传 clean:false);`n- 搜索网页用 http_search(DeepSeek 需 key,无 key 自动用 DuckDuckGo)。`n技能:`n- 先 skill_list 查可用技能;`n- 需要步骤细节时 skill_show 读 SKILL.md(可带 file 读附带文件);`n- 新建技能用 skill_scaffold。"
         }
     }
     foreach ($k in $shellPatch.Keys) { $agentPatch[$k] = $shellPatch[$k] }
@@ -223,7 +227,11 @@ try {
             "fs-local" = @{ workspace = ""; tmp = "workspace/.ada-tmp" }
             "memory-helper" = @{ autoRecall = $true }
             "system-prompt" = @{
-                tools = "长期记忆:`n- 用户要求记住事实/偏好时调用 memory_write;`n- 回答涉及既往信息时先 memory_search 再引用;`n- 用户要求忘记时调用 memory_forget。`n工具发现:`n- 工具较多或不确定用哪个时,先 tool_find 查询;`n- 已知工具名时用 tool_exec 按名字调用,参数放在 args 对象里。"
+                tools = "长期记忆:`n- 用户要求记住事实/偏好时调用 memory_write;`n- 回答涉及既往信息时先 memory_search 再引用;`n- 用户要求忘记时调用 memory_forget。`n计划:
+- 多步骤任务先 plan_set 建计划;
+- 推进到某一步时用 plan_update 更新状态与结果;
+- 需要复述当前计划用 plan_show。
+工具发现:`n- 工具较多或不确定用哪个时,先 tool_find 查询;`n- 已知工具名时用 tool_exec 按名字调用,参数放在 args 对象里。"
             }
             "workspace-local" = [ordered]@{
                 active = "repo"

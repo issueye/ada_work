@@ -92,11 +92,11 @@ bin/ada.exe agent --preset presets/workspace-release.preset.json --workspace doc
 (`text`/`shell`/`memory`/`http`/`plugin`/`skill`/`git`/`task`/`command-helper`);发布
 preset 只启用栈内插件,其余全部写入 `disable`(不在 allowlist 里的插件):
 
-- `agent-release`: agent-loop、session-memory/stats、system-prompt、seam-llm + llm-replay、
+- `agent-release`: agent-loop、plan、session-memory/stats、system-prompt、seam-llm + llm-replay、
   seam-fs + fs-local、seam-tools、compaction-basic、text-helper(TS)、memory-helper(TS,
   `autoRecall` 打开)、tool-helper(Go),以及 shell 栈(seam-shell + shell-local + shell-guard +
-  seam-sandbox + sandbox-none + shell-helper TS);`system-prompt.tools` 会附上记忆工具与
-  `tool_find`/`tool_exec` 的使用规则;
+  seam-sandbox + sandbox-none + shell-helper TS);`system-prompt.tools` 会附上记忆、计划
+  (`plan_set`/`plan_update`/`plan_show`)与 `tool_find`/`tool_exec` 的使用规则;
 - `workspace-release`: 再增加 seam/workspace + workspace-local + workspace-guard + workspace-helper,
   不启用 shell 栈;
 - `agent-real-release`(可选): 用 `llm-openai` 替换 `llm-replay`,同样带 shell 栈。
