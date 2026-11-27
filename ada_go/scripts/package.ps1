@@ -136,14 +136,19 @@ try {
         throw "没有导出任何内置插件"
     }
 
+    # 发布 preset 默认启用「给 agent 用的」内置插件:工具、核心、seam 与各 provider 的默认实现。
+    # 只保留三类例外:互斥实现(同一服务只能有一个 provider)、审批人(默认 deny/cli 二选一)、
+    # 宿主传输(rpc-* 由 ada-rpc-agent 自己装配)。
     $agentBase = @(
         "agent-loop", "plan", "compaction-basic", "fs-local", "llm-replay",
         "seam-fs", "seam-llm", "seam-prompts", "seam-session", "seam-tools",
-        "session-memory", "session-stats", "system-prompt", "text-helper", "memory-helper", "tool-helper"
+        "session-memory", "session-stats", "system-prompt",
+        "text-helper", "memory-helper", "task-helper", "tool-helper"
     )
     # shell 栈只在 agent preset 里打开;workspace preset 保持无命令执行。
     $shellAllow = @(
-        "seam-shell", "shell-local", "shell-guard", "seam-sandbox", "sandbox-none", "shell-helper"
+        "seam-shell", "shell-local", "shell-guard", "seam-sandbox", "sandbox-none",
+        "shell-helper", "git-helper", "command-helper"
     )
         # 插件开发工具随默认 agent preset 启用:生成/体检只动工作区文件,写入仍受 fs 策略约束;
     # Go 插件不在生成范围内(见 docs/tool-plugin-helper.md)。
@@ -259,7 +264,7 @@ try {
         (($workspacePreset | ConvertTo-Json -Depth 10) + "`n"), $utf8)
     # acp-release:在 agent-release 基础上额外启用 agent-control / seam-acp / seam-approval,
     # 让 `ada acp` 的 ACP 控制层(control 服务 / 编辑器能力 / 审批路由)可用;否则报"没有 control 服务"。
-    $acpAllow = $agentAllow + @("agent-control", "seam-acp", "seam-approval")
+    $acpAllow = $agentAllow + @("agent-control", "seam-acp", "seam-approval", "acp-helper")
     $missingAcp = @($acpAllow | Where-Object { $_ -notin $ids })
     if ($missingAcp.Count -gt 0) {
         throw "acp allowlist 引用了不存在的插件: $($missingAcp -join ', ')"

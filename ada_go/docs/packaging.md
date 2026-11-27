@@ -83,7 +83,7 @@ bin/ada.exe agent --preset presets/agent-release.preset.json -message "读取 a.
 bin/ada.exe agent --preset presets/workspace-release.preset.json --workspace docs -message "查询工作区并读取 a.txt"
 ```
 
-`acp-release` 在 `agent-release` 基础上额外启用 `agent-control` / `seam-acp` / `seam-approval`,
+`acp-release` 在 `agent-release` 基础上额外启用 `agent-control` / `seam-acp` / `seam-approval` / `acp-helper`,
 用于 `ada acp --preset presets/acp-release.preset.json`(ACP 模式;`ada acp` 需要 `agent-control` 提供 control 服务)。
 
 ## 4. preset 的 allowlist
@@ -93,15 +93,20 @@ bin/ada.exe agent --preset presets/workspace-release.preset.json --workspace doc
 preset 只启用栈内插件,其余全部写入 `disable`(不在 allowlist 里的插件):
 
 - `agent-release`: agent-loop、plan、session-memory/stats、system-prompt、seam-llm + llm-replay、
-  seam-fs + fs-local、seam-tools、compaction-basic、text-helper(TS)、memory-helper(TS,
-  `autoRecall` 打开)、tool-helper(Go),以及 shell 栈(seam-shell + shell-local + shell-guard +
-  seam-sandbox + sandbox-none + shell-helper TS);`system-prompt.tools` 会附上记忆、计划
+  seam-fs + fs-local、seam-tools、compaction-basic、text/memory/task/tool-helper(TS/Go),
+  以及 shell 栈(seam-shell + shell-local + shell-guard + seam-sandbox + sandbox-none +
+  shell-helper、git-helper、command-helper);`system-prompt.tools` 会附上记忆、计划
   (`plan_set`/`plan_update`/`plan_show`)与 `tool_find`/`tool_exec` 的使用规则;
 - `workspace-release`: 再增加 seam/workspace + workspace-local + workspace-guard + workspace-helper,
   不启用 shell 栈;
 - `agent-real-release`(可选): 用 `llm-openai` 替换 `llm-replay`,同样带 shell 栈。
 
 未启用的插件仍以清单形式随包发布,方便后续在 preset 中启用;启用时必须补上它自己的配置。
+保持默认关闭的只有四类:**互斥实现**(`llm-openai` 对 `llm-replay`、`session-jsonl` 对
+`session-memory`)、**审批人**(`approval-cli`/`approval-deny`)、**宿主传输**(`rpc-*` 与
+`seam-rpc`,由 `ada-rpc-agent` 自己装配)、**守卫/策略**(`fs-sandbox`、`caps-gate`、
+`approval-gate`、`audit-log`、`*-redact`/`*-observe`、`llm-retry`、`tool-timeout`、
+`secrets-guard`、`workspace-guard` 等——它们会改变默认行为,是否开启属于产品口径)。
 
 ## 5. 自检
 
