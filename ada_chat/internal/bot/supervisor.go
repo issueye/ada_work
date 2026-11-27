@@ -20,6 +20,14 @@ import (
 	"ada_chat/internal/rpc"
 )
 
+// 一轮回答的时长策略:真正判死的是「多久没有新进展」,不是总时长。
+// 固定 3 分钟会把工具多的长任务误杀 —— 用户看到的 context deadline exceeded
+// 就是这样来的;重试也只会再撞一次同一堵墙。
+const (
+	turnIdleTimeout = 2 * time.Minute
+	turnMaxTimeout  = 30 * time.Minute
+)
+
 // Supervisor owns process instances. The key is the working directory: every
 // bot that points at the same workspace shares one process and one RPC peer.
 // ada_chat owns the lifecycle so adding a second bot in the same workspace
@@ -65,11 +73,63 @@ type instance struct {
 	acpApprovals  map[string]chan bool
 	acpPermission int
 
+	// lastActivity 是最近一次收到进展的时间(会话更新/工具事件/审批请求),
+	// idleHit 记这一轮是不是被「长时间没有新进展」掐断的。
+	lastActivity atomic.Int64
+	idleHit      atomic.Bool
+
 	// turns maps a chat turn/message id to the bot that asked for it, so shared
 	// process events still update the right conversation.
 	turns    map[int]int
 	bots     map[int]struct{}
 	stopping atomic.Bool
+}
+
+// touch 记录一次进展(会话更新、工具事件、审批请求都算)。
+func (r *instance) touch() { r.lastActivity.Store(time.Now().UnixNano()) }
+
+// idleFor 返回距离最近一次进展的时长;还没打过点时按 0 处理。
+func (r *instance) idleFor() time.Duration {
+	last := r.lastActivity.Load()
+	if last == 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, last))
+}
+
+// watchIdle 是「长时间没有新进展」的看门狗:超过 turnIdleTimeout 没有事件时,
+// 先让 agent 停下这一轮(ACP 用 session/cancel),再取消本地等待。
+// 总时长仍由 maxCtx(turnMaxTimeout)兜底,防止彻底跑飞。
+func (s *Supervisor) watchIdle(r *instance, turn int, idle time.Duration, maxCtx context.Context, cancel context.CancelFunc, stop <-chan struct{}) {
+	tick := time.Second
+	if idle > 0 && idle < tick {
+		tick = idle
+	}
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-maxCtx.Done():
+			return
+		case <-t.C:
+			if r.idleFor() <= idle {
+				continue
+			}
+			r.idleHit.Store(true)
+			s.mu.Lock()
+			sid := r.acpTurns[turn]
+			s.mu.Unlock()
+			if sid != "" && r.acp != nil {
+				cctx, ccancel := context.WithTimeout(context.Background(), 2*time.Second)
+				_ = r.acp.Cancel(cctx, sid)
+				ccancel()
+			}
+			cancel()
+			return
+		}
+	}
 }
 
 // acpBinding 把 agent 侧 sessionId 关联到发起这一轮的会话。
@@ -422,6 +482,7 @@ func (s *Supervisor) waitACP(ctx context.Context, r *instance) error {
 
 // acpNotification 把 ACP session/update 映射到聊天消息、思考块与工具卡片。
 func (s *Supervisor) acpNotification(r *instance, n acp.Notification) {
+	r.touch()
 	if n.Method != "session/update" {
 		return
 	}
@@ -527,6 +588,7 @@ func (s *Supervisor) acpSessionFor(ctx context.Context, r *instance, b *app.Bot,
 
 // acpPermission 把 agent 的反向权限请求转成宿主审批面板,并等待用户决定。
 func (s *Supervisor) acpPermission(r *instance, ctx context.Context, params json.RawMessage) (any, error) {
+	r.touch() // 权限请求本身也是一次进展
 	var p struct {
 		SessionID string `json:"sessionId"`
 		ToolCall  struct {
@@ -771,6 +833,7 @@ func (s *Supervisor) refreshInfo(r *instance, p rpc.Peer) {
 
 func (s *Supervisor) events(r *instance, p rpc.Peer) {
 	for ev := range p.Events() {
+		r.touch()
 		switch ev.Topic {
 		case "chat/delta":
 			var d struct {
@@ -957,13 +1020,19 @@ func (s *Supervisor) Send(b *app.Bot, turn int, text string, sessionID int) erro
 	s.notify[turn] = make(chan struct{}, 1)
 	s.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	maxCtx, maxCancel := context.WithTimeout(ctx, turnMaxTimeout)
 	s.mu.Lock()
 	s.cancels[turn] = cancel
 	s.mu.Unlock()
+	r.idleHit.Store(false)
+	r.touch()
+	stopWatch := make(chan struct{})
 
 	go func() {
 		defer func() {
+			close(stopWatch)
+			maxCancel()
 			cancel()
 			s.mu.Lock()
 			delete(s.cancels, turn)
@@ -971,6 +1040,7 @@ func (s *Supervisor) Send(b *app.Bot, turn int, text string, sessionID int) erro
 			delete(s.notify, turn)
 			s.mu.Unlock()
 		}()
+		go s.watchIdle(r, turn, turnIdleTimeout, maxCtx, cancel, stopWatch)
 		p, reason := s.waitPeer(r, 10*time.Second)
 		if p == nil {
 			s.forgetTurn(r, turn)
@@ -990,7 +1060,7 @@ func (s *Supervisor) Send(b *app.Bot, turn int, text string, sessionID int) erro
 			"botId": b.ID, "botName": b.Name, "instruction": b.Instruction,
 			"sessionId": strconv.Itoa(sessionID),
 		}
-		err := p.Call(ctx, "chat.send", params, &res)
+		err := p.Call(maxCtx, "chat.send", params, &res)
 		manual := s.takeCanceled(turn)
 		s.forgetTurn(r, turn)
 		if manual {
@@ -998,6 +1068,11 @@ func (s *Supervisor) Send(b *app.Bot, turn int, text string, sessionID int) erro
 			return
 		}
 		if err != nil {
+			// 长时间没有新进展:这不是 runtime 的错误事件,自己写一条可读原因。
+			if r.idleHit.Load() {
+				s.app.BotTurnFailed(b.ID, turn, "长时间没有新进展("+turnIdleTimeout.String()+"),已中止这一轮")
+				return
+			}
 			// runtime 在返回错误前会发 chat/error，事件已把可读原因写进对话；
 			// 只有没等到事件（进程断开等）才回落到 RPC 错误 + 机器人日志末行。
 			if s.wasNotified(turn) {
@@ -1017,24 +1092,31 @@ func (s *Supervisor) Send(b *app.Bot, turn int, text string, sessionID int) erro
 
 // sendACP 在 ACP 连接上跑一轮:创建/复用 agent session,转发流式更新,最后结束消息。
 func (s *Supervisor) sendACP(r *instance, b *app.Bot, turn int, text string, sessionID int) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	maxCtx, maxCancel := context.WithTimeout(ctx, turnMaxTimeout)
 	s.mu.Lock()
 	s.cancels[turn] = cancel
 	s.mu.Unlock()
+	r.idleHit.Store(false)
+	r.touch()
+	stopWatch := make(chan struct{})
 
 	go func() {
 		defer func() {
+			close(stopWatch)
+			maxCancel()
 			cancel()
 			s.mu.Lock()
 			delete(s.cancels, turn)
 			delete(s.canceled, turn)
 			s.mu.Unlock()
 		}()
-		if err := s.waitACP(ctx, r); err != nil {
+		go s.watchIdle(r, turn, turnIdleTimeout, maxCtx, cancel, stopWatch)
+		if err := s.waitACP(maxCtx, r); err != nil {
 			s.app.BotTurnFailed(b.ID, turn, "ACP 尚未就绪: "+errText(err))
 			return
 		}
-		session, err := s.acpSessionFor(ctx, r, b, sessionID)
+		session, err := s.acpSessionFor(maxCtx, r, b, sessionID)
 		if err != nil {
 			if s.takeCanceled(turn) {
 				s.app.BotTurnDone(b.ID, turn, "")
@@ -1053,7 +1135,7 @@ func (s *Supervisor) sendACP(r *instance, b *app.Bot, turn int, text string, ses
 		r.acpTurns[turn] = session
 		s.mu.Unlock()
 
-		stop, perr := r.acp.Prompt(ctx, session, text)
+		stop, perr := r.acp.Prompt(maxCtx, session, text)
 
 		s.mu.Lock()
 		if bind, ok := r.acpBindings[session]; ok && bind.Turn == turn {
@@ -1068,6 +1150,10 @@ func (s *Supervisor) sendACP(r *instance, b *app.Bot, turn int, text string, ses
 			return
 		}
 		if perr != nil {
+			if r.idleHit.Load() {
+				s.app.BotTurnFailed(b.ID, turn, "长时间没有新进展("+turnIdleTimeout.String()+"),已中止这一轮")
+				return
+			}
 			s.app.BotTurnFailed(b.ID, turn, "ACP 请求失败: "+errText(perr))
 			return
 		}
