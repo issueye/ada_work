@@ -629,6 +629,7 @@ func (a *App) StopTurn() bool {
 	}
 	last.Streaming = false
 	collapseReasoning(last)
+	collapseTools(last)
 	s.Preview = Clip(last.Text, 88)
 	s.Updated = a.now()
 	a.removeApprovals(s.BotID, last.ID)
@@ -1011,6 +1012,14 @@ func collapseReasoning(m *Message) {
 	}
 }
 
+// collapseTools 收起这一轮的工具卡片。一轮结束后只留报告(正文),
+// 过程(思考、命令、参数/结果)折成一行,用户再点开还能看到细节。
+func collapseTools(m *Message) {
+	for _, call := range m.Tools {
+		call.Open = false
+	}
+}
+
 // BotDelta 追加机器人流式回答的一段文本。
 func (a *App) BotDelta(botID, turn int, chunk string) {
 	a.apply(func() {
@@ -1208,6 +1217,7 @@ func (a *App) BotTurnDone(botID, turn int, final string) {
 			}
 			m.Streaming = false
 			collapseReasoning(m)
+			collapseTools(m)
 			s.Preview = Clip(m.Text, 88)
 			s.Updated = a.now()
 			a.removeApprovals(botID, turn)
@@ -1235,6 +1245,7 @@ func (a *App) BotTurnFailed(botID, turn int, reason string) {
 		}
 		m.Streaming = false
 		collapseReasoning(m)
+		collapseTools(m)
 		s.Preview = Clip(m.Text, 88)
 		a.removeApprovals(botID, turn)
 		a.persist()

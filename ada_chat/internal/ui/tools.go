@@ -6,7 +6,6 @@ import (
 
 	mui "github.com/egoist/mygo/ui"
 	"github.com/lobehub/lobe-mygo/pkg/code"
-	"github.com/lobehub/lobe-mygo/pkg/display"
 	"github.com/lobehub/lobe-mygo/pkg/feedback"
 	"github.com/lobehub/lobe-mygo/pkg/layout"
 	"github.com/lobehub/lobe-mygo/pkg/lucide"
@@ -51,32 +50,36 @@ func toolKey(call *app.ToolCall) string {
 }
 
 // toolCard 是对话里的一次工具调用：一行标题（工具名、状态、耗时），展开后是参数和结果。
+//
+// 工具是「过程」:默认只留一行低对比度的标题,不套外框、不用卡片底色;展开后的参数/结果
+// 也走无边框样式,避免每次调用都在对话里砸出一个方块。
 func toolCard(c *mui.Context, tk *theme.Tokens, call *app.ToolCall) {
-	card := layout.Block(c, layout.BlockProps{Variant: layout.BlockOutlined}).AlignSelf(mui.Stretch).FillWidth().Clip()
-	card.Children(func() {
-		p := mui.CollapsibleBase(c.Key(toolKey(call)), &call.Open)
-		tr := p.Trigger.Label(call.Name).Row().FillWidth().Padding(10, 12).Gap(8).AlignItems(mui.Center).
-			Cursor(mui.CursorPointer).Unselectable()
-		if tr.Hovered() {
-			tr.Background(tk.FillTertiary)
+	p := mui.CollapsibleBase(c.Key(toolKey(call)), &call.Open)
+	tr := p.Trigger.Label(call.Name).Row().FillWidth().Padding(2, 10).Gap(6).AlignItems(mui.Center).
+		Cursor(mui.CursorPointer).Unselectable()
+	if tr.Hovered() {
+		tr.Background(tk.FillTertiary).Radius(tk.BorderRadiusSM)
+	}
+	tr.Children(func() {
+		mui.Icon(c, toolIcon(call.Name)).FontSize(13).TextColor(tk.TextTertiary)
+		mui.Text(c, call.Name).FontSize(12).FontWeight(500).TextColor(tk.TextSecondary)
+		toolStatus(c, tk, call)
+		mui.Spacer(c)
+		if took := toolTook(call); took != "" {
+			mui.Text(c, took).FontSize(11).TextColor(tk.TextTertiary)
 		}
-		tr.Children(func() {
-			mui.Icon(c, toolIcon(call.Name)).FontSize(14).TextColor(tk.TextSecondary)
-			mui.Text(c, call.Name).FontSize(13).FontWeight(600).TextColor(tk.Text)
-			toolStatus(c, call)
-			mui.Spacer(c)
-			if took := toolTook(call); took != "" {
-				mui.Text(c, took).FontSize(11).TextColor(tk.TextTertiary)
-			}
-			mui.Icon(c, lucide.ChevronDown()).FontSize(14).TextColor(tk.TextTertiary).Rotate(180 * p.Progress())
-		})
-		p.Panel(func() {
-			// 展开内容限高并在内部滚动:工具结果可能是整页 HTML,不能让卡片顶穿整条对话。
+		mui.Icon(c, lucide.ChevronDown()).FontSize(13).TextColor(tk.TextTertiary).Rotate(180 * p.Progress())
+	})
+	p.Panel(func() {
+		// 展开后的参数/结果是卡片:(收起时只有一行标题,展开才有框)。
+		card := layout.Block(c, layout.BlockProps{Variant: layout.BlockOutlined}).FillWidth()
+		card.Background(tk.FillQuaternary)
+		card.Children(func() {
+			// 内容限高并在内部滚动:工具结果可能是整页 HTML,不能让卡片顶穿整条对话。
 			mui.Scroll(c).MaxHeight(320).MaxWidthPercent(100).Children(func() {
-				// 上下留白与左右一致：标题行 10 + 面板 2，标签距上边框正好 12。
-				mui.Column(c).Padding(2, 12, 12, 12).Gap(6).Children(func() {
+				mui.Column(c).Padding(8, 10, 10, 10).Gap(6).Children(func() {
 					mui.Text(c, "参数").FontSize(11).FontWeight(600).TextColor(tk.TextTertiary)
-					code.Snippet(c, call.Args, code.SnippetProps{Language: "json", Variant: code.Filled, FontSize: 12})
+					code.Snippet(c, call.Args, code.SnippetProps{Language: "json", Variant: code.Borderless, FontSize: 12})
 					if call.State == app.ToolRunning {
 						return
 					}
@@ -87,25 +90,25 @@ func toolCard(c *mui.Context, tk *theme.Tokens, call *app.ToolCall) {
 						})
 						return
 					}
-					markdown.Markdown(c, call.Result, markdown.MarkdownProps{Variant: markdown.Chat, FontSize: 13})
+					markdown.Markdown(c, call.Result, markdown.MarkdownProps{Variant: markdown.Chat, FontSize: 12})
 				})
 			})
 		})
 	})
 }
 
-func toolStatus(c *mui.Context, call *app.ToolCall) {
-	if call.State == app.ToolRunning {
-		// Spin 自带 AlignSelf(Start);在居中行里要改回 Center，否则会和“运行中”文字错位。
+// toolStatus 是工具状态的低对比度标签:运行中带 spinner,失败才用错误色。
+func toolStatus(c *mui.Context, tk *theme.Tokens, call *app.ToolCall) {
+	switch call.State {
+	case app.ToolRunning:
+		// Spin 自带 AlignSelf(Start);在居中行里要改回 Center,否则会和文字错位。
 		feedback.Spin(c, feedback.SpinProps{CustomSize: 11}, nil).AlignSelf(mui.Center)
-		display.Tag(c, "运行中", display.TagProps{Variant: display.TagBorderless, Color: display.TagProcessing, Size: theme.Small})
-		return
+		mui.Text(c, "运行中").FontSize(11).TextColor(tk.TextSecondary)
+	case app.ToolFailed:
+		mui.Text(c, "失败").FontSize(11).TextColor(tk.Error)
+	default:
+		mui.Text(c, "已完成").FontSize(11).TextColor(tk.TextTertiary)
 	}
-	if call.State == app.ToolFailed {
-		display.Tag(c, "失败", display.TagProps{Variant: display.TagBorderless, Color: display.TagError, Size: theme.Small})
-		return
-	}
-	display.Tag(c, "已完成", display.TagProps{Variant: display.TagBorderless, Color: display.TagSuccess, Size: theme.Small})
 }
 
 func toolTook(call *app.ToolCall) string {

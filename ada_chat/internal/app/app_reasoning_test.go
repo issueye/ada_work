@@ -2,6 +2,7 @@ package app
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -69,4 +70,32 @@ func TestStopTurnCollapsesReasoning(t *testing.T) {
 		t.Fatalf("停止后不应再标记 streaming")
 	}
 	_ = time.Now
+}
+
+// TestTurnDoneCollapsesTools 一轮结束后把工具卡片一并收起:只留报告(正文),
+// 过程折成一行,用户想看得点开。
+func TestTurnDoneCollapsesTools(t *testing.T) {
+	withStatePath(t, filepath.Join(t.TempDir(), "state.json"))
+	call := &ToolCall{ID: "call-1", Name: "run_shell", Open: true, State: ToolDone}
+	m := &Message{
+		ID: 2, Role: RoleAssistant, Streaming: true,
+		Tools: []*ToolCall{call},
+		Parts: []Part{
+			{Kind: PartText, Text: "先看看"},
+			{Kind: PartTool, ToolID: call.ID},
+			{Kind: PartText, Text: "报告：一切正常"},
+		},
+	}
+	a := &App{Sessions: []*Session{{ID: 1, BotID: 1, Messages: []*Message{m}}}}
+	a.BotTurnDone(1, m.ID, "报告：一切正常")
+
+	if call.Open {
+		t.Fatalf("结束时工具卡片应收起: %+v", call)
+	}
+	if m.Streaming {
+		t.Fatalf("结束时不应再 streaming")
+	}
+	if !strings.Contains(m.Text, "报告：一切正常") {
+		t.Fatalf("报告不应被折叠掉: %q", m.Text)
+	}
 }

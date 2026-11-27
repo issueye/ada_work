@@ -47,6 +47,7 @@ func (u *UI) chatPanel(c *mui.Context) {
 			u.todoPanel(c, tk)
 			mui.Column(c).Grow(1).Basis(0).MinHeight(0).AlignItems(mui.Center).Children(func() {
 				u.transcript(c, tk)
+				u.scrollToEndButton(c, tk)
 			})
 			u.composerArea(c, tk)
 		})
@@ -229,6 +230,32 @@ func (u *UI) transcript(c *mui.Context, tk *theme.Tokens) {
 		u.pending = nil
 		fn()
 	}
+	// 「回到底部」只在列表被滚离末尾时出现；AtEnd 读的是上一帧的布局结果。
+	u.scrollAway = len(msgs) > 0 && !u.chatList.AtEnd()
+}
+
+// scrollToEndButton 是对话区右下角的浮动按钮:列表不在末尾时出现,点击回到底部。
+// 它挂在对话区域的右下角(Attach 不进布局),所以不会挤动消息与输入框。
+func (u *UI) scrollToEndButton(c *mui.Context, tk *theme.Tokens) {
+	if !u.scrollAway {
+		return
+	}
+	const size float32 = 32
+	b := mui.ButtonBase(c).Label("回到底部").Size(size, size).Radius(size / 2).Center().Cursor(mui.CursorPointer)
+	bg := tk.BgElevated
+	if b.Hovered() {
+		bg = tk.FillTertiary
+	}
+	b.Background(bg).Border(1, tk.BorderSecondary)
+	b.Children(func() {
+		mui.Icon(c, lucide.ChevronDown()).FontSize(15).TextColor(tk.TextSecondary)
+	})
+	if b.Clicked() {
+		u.chatList.ScrollToEnd()
+		u.scrollAway = false
+	}
+	// 右下角留出与输入框一致的内边距。
+	b.Attach(mui.AnchorBottomRight, mui.AnchorBottomRight).Margin(0, 16, 16, 0)
 }
 
 func (u *UI) emptyChat(c *mui.Context, tk *theme.Tokens) {
@@ -353,32 +380,35 @@ func (u *UI) assistantMessage(c *mui.Context, tk *theme.Tokens, m *app.Message) 
 }
 
 // reasoningCard 显示模型这一段思考内容：默认展开，用户也可以收起；思考流式进行时带 spinner。
+//
+// 它是「过程」而不是「结论」:不套外框、不用填充底色,只用低对比度的一行标题与正文,
+// 让报告(正文 markdown)始终是视觉重点。
 func (u *UI) reasoningCard(c *mui.Context, tk *theme.Tokens, m *app.Message, index int, part *app.Part, streaming bool) {
 	p := mui.CollapsibleBase(c.Key("reasoning:"+strconv.Itoa(m.ID)+":"+strconv.Itoa(index)), &part.Open)
-	card := layout.Block(c, layout.BlockProps{Variant: layout.BlockOutlined}).AlignSelf(mui.Stretch).FillWidth().Clip()
-	card.Background(tk.FillQuaternary)
-	card.Children(func() {
-		tr := p.Trigger.Label("思考过程").Row().FillWidth().Padding(8, 12).Gap(8).AlignItems(mui.Center).
-			Cursor(mui.CursorPointer).Unselectable()
-		if tr.Hovered() {
-			tr.Background(tk.FillTertiary)
+	tr := p.Trigger.Label("思考过程").Row().FillWidth().Padding(2, 10).Gap(6).AlignItems(mui.Center).
+		Cursor(mui.CursorPointer).Unselectable()
+	if tr.Hovered() {
+		tr.Background(tk.FillTertiary).Radius(tk.BorderRadiusSM)
+	}
+	tr.Children(func() {
+		mui.Icon(c, lucide.Brain()).FontSize(13).TextColor(tk.TextTertiary)
+		mui.Text(c, "思考过程").FontSize(11).FontWeight(500).TextColor(tk.TextTertiary)
+		if streaming {
+			// Spin 自带 AlignSelf(Start);在居中行里要改回 Center，否则会比文字高一截。
+			feedback.Spin(c, feedback.SpinProps{CustomSize: 10}, nil).AlignSelf(mui.Center)
 		}
-		tr.Children(func() {
-			mui.Icon(c, lucide.Brain()).FontSize(14).TextColor(tk.TextTertiary)
-			mui.Text(c, "思考过程").FontSize(12).FontWeight(500).TextColor(tk.TextSecondary)
-			if streaming {
-				// Spin 自带 AlignSelf(Start);在居中行里要改回 Center，否则会比文字高一截。
-				feedback.Spin(c, feedback.SpinProps{CustomSize: 10}, nil).AlignSelf(mui.Center)
-			}
-			mui.Spacer(c)
-			mui.Icon(c, lucide.ChevronDown()).FontSize(14).TextColor(tk.TextTertiary).Rotate(180 * p.Progress())
-		})
-		p.Panel(func() {
-			// 上留白与左留白一致(12)：思考正文不贴标题行。
-			mui.Column(c).Padding(12, 12, 10, 12).Children(func() {
+		mui.Spacer(c)
+		mui.Icon(c, lucide.ChevronDown()).FontSize(13).TextColor(tk.TextTertiary).Rotate(180 * p.Progress())
+	})
+	p.Panel(func() {
+		// 展开后的思考正文是卡片;收起时只留一行低对比度标题。
+		card := layout.Block(c, layout.BlockProps{Variant: layout.BlockOutlined}).FillWidth()
+		card.Background(tk.FillQuaternary)
+		card.Children(func() {
+			mui.Column(c).Padding(8, 10, 10, 10).Opacity(0.85).Children(func() {
 				markdown.Markdown(c, part.Text, markdown.MarkdownProps{
 					Variant:  markdown.Chat,
-					FontSize: 13,
+					FontSize: 12,
 					Animated: streaming,
 				})
 			})

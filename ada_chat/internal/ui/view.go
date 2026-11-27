@@ -86,6 +86,8 @@ type UI struct {
 
 	chatList mui.ListState
 	activeID int
+	// scrollAway 表示对话列表不在末尾:此时右下角显示「回到底部」按钮。
+	scrollAway bool
 	// pending 是列表行发起的改动，等列表建完再执行。
 	pending func()
 	// todoOpen 按会话保存任务面板的展开状态;默认展开。
@@ -153,6 +155,7 @@ func (u *UI) resetListIfSwitched() {
 	}
 	u.activeID = u.App.ActiveID
 	u.chatList = mui.ListState{}
+	u.scrollAway = false
 }
 
 // applyTheme 按偏好的明暗模式切换主题;偏好为空时跟随系统。

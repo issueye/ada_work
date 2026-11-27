@@ -67,5 +67,10 @@ func TestReasoningTailKeepsSpinner(t *testing.T) {
 	if !tt.FramePending() {
 		t.Fatalf("思考流式进行时应有动画")
 	}
+	// 展开的思考正文是卡片:等折叠/逐字动画走完再截图人工核对。
+	for i := 0; i < 12; i++ {
+		tt.Advance(200 * time.Millisecond)
+		tt.Frame()
+	}
 	shot(t, tt, "chat-reasoning.png")
 }
