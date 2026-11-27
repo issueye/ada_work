@@ -152,7 +152,7 @@ try {
     )
         # 插件开发工具随默认 agent preset 启用:生成/体检只动工作区文件,写入仍受 fs 策略约束;
     # Go 插件不在生成范围内(见 docs/tool-plugin-helper.md)。
-    $agentAllow = $agentBase + $shellAllow + @("plugin-helper", "skill-helper", "http-helper", "seam-secrets", "secrets-env")
+    $agentAllow = $agentBase + $shellAllow + @("plugin-helper", "skill-helper", "http-helper", "seam-secrets", "secrets-env", "llm-retry")
     $workspaceAllow = $agentBase + @(
         "seam-workspace", "workspace-helper", "workspace-guard", "workspace-local"
     )
@@ -204,6 +204,9 @@ try {
         "secrets-env" = @{ allow = @("DEEPSEEK_API_KEY") }
         # 记忆工具默认随包启用;模型需要知道什么时候写入/检索/忘记。
         "memory-helper" = @{ autoRecall = $true }
+        # 供应商调用遇到可重试错误(超时/限流/5xx)时自动退避重试;
+        # 这是「重试机制」的第一层,ACP/RPC 的整轮时长策略是第二层。
+        "llm-retry" = @{ maxRetries = 2; baseDelayMs = 500; maxDelayMs = 4000 }
         "system-prompt" = @{
             tools = "长期记忆:`n- 用户要求记住事实/偏好时调用 memory_write;`n- 回答涉及既往信息时先 memory_search 再引用;`n- 用户要求忘记时调用 memory_forget。`n计划:
 - 多步骤任务先 plan_set 建计划;
