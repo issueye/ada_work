@@ -129,6 +129,8 @@
 | [workspace-plugin.md](docs/workspace-plugin.md) | 工作区:seam/workspace、workspace-local、workspace-guard、workspace-helper 与会话绑定 |
 | [seam-shell.md](docs/seam-shell.md) | M5 安全第二刀:seam/shell、shell-local 实现与 shell-guard 策略 |
 | [seam-sandbox.md](docs/seam-sandbox.md) | M5 安全第三刀:seam/sandbox 与 sandbox-none(policy-only) |
+| [context-inject.md](docs/context-inject.md) | 工作区上下文注入:llm/request 改写策略、配置与不变量 |
+| [plugin-authoring.md](docs/plugin-authoring.md) | 插件编写规范:形态、清单、ctx API、接入 preset 与验证 |
 | [seam-approval.md](docs/seam-approval.md) | M5 安全第四刀:seam/approval、approval-deny 与 fs 升级审批 |
 | [caps.md](docs/caps.md) | M5 能力授权:caps 语法、信任等级与 Broker |
 | [install.md](docs/install.md) | M5 安装与签名:清单/摘要/Ed25519/原子安装 |

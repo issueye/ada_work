@@ -43,6 +43,75 @@ type Manifest = {
 }
 
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,47}$/
+// PLUGIN_GUIDE 是给模型的插件规范(plugin_guide 原样返回,scaffold 的 README 也引用)。
+// 用「行数组 + join」而不是模板字符串:正文里要写 Markdown 代码围栏(反引号)。
+const PLUGIN_GUIDE = [
+  "# ada 插件编写规范",
+  "",
+  "## 两种插件",
+  "",
+  "| kind | 形态 | 能否运行期新建 |",
+  "|---|---|---|",
+  "| ts | plugin.ts 源码,装配时用内置 esbuild 现场编译 | 能:写进工作区目录,重启机器人进程后生效 |",
+  "| go | 编译进宿主的实现,靠 builtins 注册表 | 不能:要改 Go 代码、注册 builtins、重新编译宿主 |",
+  "",
+  "## 目录与清单",
+  "",
+  "每个插件一个目录,目录名 = 插件 id(kebab-case):",
+  "",
+  "```",
+  "plugins/<id>/",
+  "  plugin.json   清单",
+  "  plugin.ts     入口(kind=ts)",
+  "  README.md     可选",
+  "```",
+  "",
+  "plugin.json 字段:",
+  "",
+  "```json",
+  '{ "id": "my-plugin", "name": "my plugin", "version": "0.1.0", "kind": "ts",',
+  '  "entry": "plugin.ts", "inject": { "required": ["tools"], "optional": ["fs"] } }',
+  "```",
+  "",
+  "- id 与目录同名;清单校验会拒绝不一致的名字与版本。",
+  "- kind 只有 ts/go;ts 必须有 entry(或预编译 artifact)。",
+  "- inject:依赖的服务名。required 缺失时插件停在 pending(不是静默跳过);optional 缺失时照常装配。",
+  "- caps:声明调用点能力(fs.read/write/exec...),由安装信任等级决定是否放行;描述代码需要什么,不是授权本身。",
+  "",
+  "## 代码形状(kind=ts)",
+  "",
+  "```ts",
+  "export function apply(ctx, config) {",
+  '  ctx.log("装配完成")',
+  '  ctx.tool({ name: "my_tool", summary: "一句话", input: { type: "object" } }, (args) => {',
+  '    return { status: "ok", content: "结果" }',
+  "  })",
+  "}",
+  "```",
+  "",
+  "- ESM only;apply 必须可重入、无模块级状态(状态放 ctx.store)。",
+  "- 允许 async;调用边界内的事件循环会等待它(不要靠遗留定时器做后台工作)。",
+  "- ctx 能力:log / tool / provide / emit / on / effect / store / inject。",
+  "- 可用模块:ada:fs(read/write/edit/search/list)、ada:shell(run/exec)、ada:secrets(get)、",
+  "  ada:plan(get/set/update)、ada:session(current/append/history)、ada:store、node:*(宿主内置的 Node 兼容模块)。",
+  "- 工具的 input 是 JSON Schema;返回值可以是字符串,或 {status, content, details}。",
+  "",
+  "## 接入并生效",
+  "",
+  "1. 用 plugin_scaffold 生成骨架(或手写 plugin.json + plugin.ts);",
+  "2. 把插件目录写进 preset 的 plugins 列表(相对路径按 preset 文件所在目录解析);",
+  "   preset 用 enable 白名单时把 id 加进 enable;默认关闭时从 disable 里移除;",
+  "3. 重启机器人进程:装配只发生在进程启动时,运行中的进程不会热加载新插件;",
+  "4. 验证:ada plan --preset <preset> 看清单与顺序,ada check <目录> 编译校验。",
+  "",
+  "## 硬约束",
+  "",
+  "- 一个插件只做一件事:seam(契约)/ provider(实现)/ policy(门禁)/ tool(给模型的工具);",
+  "- 插件之间不 import 彼此的包,协作走服务或事件;",
+  "- secret 不进 config、日志、事件、工具结果;按名从 ada:secrets 取;",
+  "- 不在 kernel/host 加业务特判;产品差异写进 preset;",
+  "- 注释用中文、标识符用英文;禁止 eval、npm 包、node_modules、.node。",
+].join("\n")
 const MAX_FOUND = 500
 
 function errorText(err: unknown): string {
@@ -242,7 +311,7 @@ export function apply(ctx: Ctx, cfg?: Record<string, unknown>): void {
 
 // scaffoldReadme 说明下一步:TS 插件生成即可装配,不需要改二进制。
 function scaffoldReadme(id: string, name: string, summary: string): string {
-  const next = `在 preset 里加一行:\n\n\`\`\`json\n"plugins": ["plugins", "plugins/${id}"]\n\`\`\`\n\n然后用 \`ada plan --preset <preset>\` 验证装配。`
+  const next = `1. 把插件目录写进 preset 的 plugins(相对路径按 preset 文件所在目录解析;preset 用 enable 时把 "${id}" 加进 enable):\n\n\`\`\`json\n"plugins": ["plugins", "plugins/${id}"]\n\`\`\`\n\n2. **重启机器人进程**——装配只在进程启动时发生;\n\n3. 用 \`ada plan --preset <preset>\` 验证装配。\n\n完整规范见 \`plugin_guide\` 工具的输出。`
   return `# ${id}
 
 ${name}:${summary}
@@ -352,6 +421,15 @@ export function apply(ctx: Ctx): void {
     },
   )
 
+  ctx.tool(
+    {
+      name: "plugin_guide",
+      summary: "读取 ada 插件编写规范:清单字段、目录、ctx API、接入 preset 与验证",
+      readOnly: true,
+      input: { type: "object", properties: {} },
+    },
+    (): ToolResult => ({ status: "ok", content: PLUGIN_GUIDE }),
+  )
   ctx.tool(
     {
       name: "plugin_scaffold",

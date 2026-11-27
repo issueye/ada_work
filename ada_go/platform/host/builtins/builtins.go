@@ -17,6 +17,7 @@ import (
 	approvalgate "github.com/issueye/ada_go_v2/plugins/policy/approval-gate"
 	auditlog "github.com/issueye/ada_go_v2/plugins/policy/audit-log"
 	capsgate "github.com/issueye/ada_go_v2/plugins/policy/caps-gate"
+	contextinject "github.com/issueye/ada_go_v2/plugins/policy/context-inject"
 	fsobserve "github.com/issueye/ada_go_v2/plugins/policy/fs-observe"
 	fsredact "github.com/issueye/ada_go_v2/plugins/policy/fs-redact"
 	fssandbox "github.com/issueye/ada_go_v2/plugins/policy/fs-sandbox"
@@ -79,6 +80,7 @@ func Plugins() map[string]func() kernel.Plugin {
 		"plan":             coreplan.Plugin,
 		"compaction-basic": compaction.Plugin,
 		"approval-gate":    approvalgate.Plugin,
+		"context-inject":   contextinject.Plugin,
 		"audit-log":        auditlog.Plugin,
 		"llm-retry":        llmretry.Plugin,
 		"tool-timeout":     tooltimeout.Plugin,

@@ -238,3 +238,23 @@ func hasString(list []string, want string) bool {
 	}
 	return false
 }
+
+// TestPluginHelperGuide 守住「模型能读到插件规范」:plugin_guide 必须返回
+// 清单字段、ctx API、接入 preset 与重启这几件关键信息,而不是让模型靠记忆。
+func TestPluginHelperGuide(t *testing.T) {
+	ws := t.TempDir()
+	reg, _ := mountPluginHelper(t, ws)
+	res := pluginCall(t, reg, "plugin_guide", map[string]any{})
+	if res.Status != tools.StatusOK {
+		t.Fatalf("plugin_guide 失败: %+v", res)
+	}
+	text := resultText(res)
+	for _, want := range []string{
+		"ada 插件编写规范", "plugin.json", "kind", "inject",
+		"重启机器人进程", "ada:fs", "plugin_scaffold",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("规范缺少 %q:\n%s", want, text)
+		}
+	}
+}

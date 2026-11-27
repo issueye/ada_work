@@ -152,7 +152,7 @@ try {
     )
         # 插件开发工具随默认 agent preset 启用:生成/体检只动工作区文件,写入仍受 fs 策略约束;
     # Go 插件不在生成范围内(见 docs/tool-plugin-helper.md)。
-    $agentAllow = $agentBase + $shellAllow + @("plugin-helper", "skill-helper", "http-helper", "seam-secrets", "secrets-env", "llm-retry")
+    $agentAllow = $agentBase + $shellAllow + @("plugin-helper", "skill-helper", "http-helper", "seam-secrets", "secrets-env", "llm-retry", "context-inject")
     $workspaceAllow = $agentBase + @(
         "seam-workspace", "workspace-helper", "workspace-guard", "workspace-local"
     )
@@ -171,6 +171,11 @@ try {
     New-Item -ItemType Directory -Force -Path $workspaceDir, $docsDir | Out-Null
     Copy-Item "examples/agent/workspace/a.txt" (Join-Path $workspaceDir "a.txt") -Force
     Copy-Item "examples/workspace/docs/a.txt" (Join-Path $docsDir "a.txt") -Force
+    # 插件编写规范与技能:随包发给用户,模型可读 docs/,技能可 skill_list/skill_show。
+    Copy-Item "docs/plugin-authoring.md" (Join-Path $docsDir "plugin-authoring.md") -Force
+    $skillsDir = Join-Path $workspaceDir "skills"
+    New-Item -ItemType Directory -Force -Path $skillsDir | Out-Null
+    Copy-Item "skills/*" -Destination $skillsDir -Recurse -Force
 
     $presetsDir = Join-Path $pkg "presets"
     New-Item -ItemType Directory -Force -Path $presetsDir | Out-Null
@@ -204,6 +209,8 @@ try {
         "secrets-env" = @{ allow = @("DEEPSEEK_API_KEY") }
         # 记忆工具默认随包启用;模型需要知道什么时候写入/检索/忘记。
         "memory-helper" = @{ autoRecall = $true }
+        # 把工作区的说明文件注入 system prompt;文件不存在就跳过,不需要额外配置。
+        "context-inject" = @{ title = "工作区上下文"; files = @("AGENTS.md", "README.md") }
         # 供应商调用遇到可重试错误(超时/限流/5xx)时自动退避重试;
         # 这是「重试机制」的第一层,ACP/RPC 的整轮时长策略是第二层。
         "llm-retry" = @{ maxRetries = 2; baseDelayMs = 500; maxDelayMs = 4000 }
@@ -212,7 +219,7 @@ try {
 - 多步骤任务先 plan_set 建计划;
 - 推进到某一步时用 plan_update 更新状态与结果;
 - 需要复述当前计划用 plan_show。
-工具发现:`n- 工具较多或不确定用哪个时,先 tool_find 查询;`n- 已知工具名时用 tool_exec 按名字调用,参数放在 args 对象里。`n插件开发:`n- 用户要新建插件时用 plugin_scaffold(只生成 TS,生成即可被 preset 装配);`n- 查看/体检已有插件用 plugin_list / plugin_show;`n- 把插件接入 preset 用 plugin_preset。`n联网:`n- 抓取网页用 http_request(默认把 HTML 清洗成正文,需要原文时传 clean:false);`n- 搜索网页用 http_search(DeepSeek 需 key,无 key 自动用 DuckDuckGo)。`n技能:`n- 先 skill_list 查可用技能;`n- 需要步骤细节时 skill_show 读 SKILL.md(可带 file 读附带文件);`n- 新建技能用 skill_scaffold。"
+工具发现:`n- 工具较多或不确定用哪个时,先 tool_find 查询;`n- 已知工具名时用 tool_exec 按名字调用,参数放在 args 对象里。`n插件开发:`n- 新建插件前先调 plugin_guide 读规范;`n- 用 plugin_scaffold 生成 TS 骨架(只生成 TS;Go 插件必须编译进宿主);`n- 查看/体检已有插件用 plugin_list / plugin_show;`n- 把插件接入 preset 用 plugin_preset;接进 preset 后要重启机器人进程才生效。`n联网:`n- 抓取网页用 http_request(默认把 HTML 清洗成正文,需要原文时传 clean:false);`n- 搜索网页用 http_search(DeepSeek 需 key,无 key 自动用 DuckDuckGo)。`n技能:`n- 先 skill_list 查可用技能;`n- 需要步骤细节时 skill_show 读 SKILL.md(可带 file 读附带文件);`n- 新建技能用 skill_scaffold。"
         }
     }
     foreach ($k in $shellPatch.Keys) { $agentPatch[$k] = $shellPatch[$k] }

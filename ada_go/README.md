@@ -128,6 +128,8 @@ v2 把「插件」从**被调用的函数袋**升级成**可编排的作用域�
 | [workspace-plugin.md](docs/workspace-plugin.md) | 工作区:seam/workspace、workspace-local、workspace-guard、workspace-helper、会话绑定与 fs/shell 托管解析 |
 | [seam-shell.md](docs/seam-shell.md) | M5:seam/shell、shell-local 与 shell-guard |
 | [seam-sandbox.md](docs/seam-sandbox.md) | M5:seam/sandbox 与 sandbox-none |
+| [context-inject.md](docs/context-inject.md) | 工作区上下文注入:AGENTS.md/README 进 system prompt |
+| [plugin-authoring.md](docs/plugin-authoring.md) | 插件编写规范:清单、ctx API、接入 preset 与验证 |
 | [seam-approval.md](docs/seam-approval.md) | M5:seam/approval、approval-deny 与升级审批 |
 | [caps.md](docs/caps.md) | M5 能力授权:caps 语法、信任等级与 Broker |
 | [install.md](docs/install.md) | M5 安装与签名:清单/摘要/Ed25519/原子安装 |

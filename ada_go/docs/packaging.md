@@ -94,7 +94,8 @@ preset 只启用栈内插件,其余全部写入 `disable`(不在 allowlist 里�
 
 - `agent-release`: agent-loop、plan、session-memory/stats、system-prompt、seam-llm + llm-replay、
   seam-fs + fs-local、seam-tools、compaction-basic、text/memory/task/tool-helper(TS/Go)、
-  llm-retry(可重试错误自动退避重试 2 次),以及 shell 栈(seam-shell + shell-local +
+  llm-retry(可重试错误自动退避重试 2 次)、context-inject(把 AGENTS.md/README.md 注入
+  system prompt,文件缺失跳过),以及 shell 栈(seam-shell + shell-local +
   shell-guard + seam-sandbox + sandbox-none + shell-helper、git-helper、command-helper);
   `system-prompt.tools` 会附上记忆、计划
   (`plan_set`/`plan_update`/`plan_show`)与 `tool_find`/`tool_exec` 的使用规则;

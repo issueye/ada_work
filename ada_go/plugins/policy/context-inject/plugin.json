@@ -1,0 +1,11 @@
+{
+  "id": "context-inject",
+  "name": "context-inject",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "optional": [
+      "fs"
+    ]
+  }
+}
