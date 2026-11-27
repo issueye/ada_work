@@ -53,14 +53,15 @@ cmd.exe /C echo probe-ok
 耗时、`enforced`(是否 OS 级隔离)与 sandbox mode。非零退出码仍返回 `StatusOK`,让模型自己判断,
 真正的执行错误(拒绝/找不到目录/超时)返回 `StatusError`。
 
-宿主(`cmd/ada-rpc-agent`)把以下过程实时转发为 seam RPC 事件:
+桌面宿主经 ACP 收到工具过程(`tool_call` / `tool_call_update`);`ada acp` 把同一个
+`tools/pre-execute` / `tools/result` 翻译成这两条 `session/update`:
 
 | 事件 | 载荷 |
 | --- | --- |
-| `chat/tool`(running) | `turn`、`id`、`name`、`args`、`status="running"` |
-| `chat/tool`(结果) | 同上,另加 `status`(`ok`/`denied`/`error`/`timeout`)、`text`、`durationMs` |
+| `tool_call` | `toolCallId`、`title`、`kind`、`status="in_progress"`、`rawInput` |
+| `tool_call_update` | `toolCallId`、`status`(`completed`/`failed`)、`content` 或 `rawOutput` |
 
-ada_chat 按 `turn` + `id` 更新对话里的工具卡片;卡片默认折叠,只显示工具名、状态和耗时,
+ada_chat 按 `turn` + `toolCallId` 更新对话里的工具卡片;卡片默认折叠,只显示工具名、状态和耗时,
 点击标题才展开参数与结果。并行的工具调用按 id 合并,结果到达的顺序不影响卡片顺序。
 
 ## 安全边界

@@ -47,7 +47,6 @@ pwsh scripts/package.ps1 -LLMEndpoint http://127.0.0.1:3050/v1 -LLMModel tokenha
 dist/ada-<version>-<goos>-<goarch>/
   bin/
     ada[.exe]
-    ada-rpc-agent[.exe]
     ada-demo[.exe]
     ada-ts-demo[.exe]
   plugins/
@@ -106,7 +105,7 @@ preset 只启用栈内插件,其余全部写入 `disable`(不在 allowlist 里�
 未启用的插件仍以清单形式随包发布,方便后续在 preset 中启用;启用时必须补上它自己的配置。
 保持默认关闭的只有四类:**互斥实现**(`llm-openai` 对 `llm-replay`、`session-jsonl` 对
 `session-memory`)、**审批人**(`approval-cli`/`approval-deny`)、**宿主传输**(`rpc-*` 与
-`seam-rpc`,由 `ada-rpc-agent` 自己装配)、**守卫/策略**(`fs-sandbox`、`caps-gate`、
+`seam-rpc`,留给需要 RPC 的宿主自己装配)、**守卫/策略**(`fs-sandbox`、`caps-gate`、
 `approval-gate`、`audit-log`、`*-redact`/`*-observe`、`llm-retry`、`tool-timeout`、
 `secrets-guard`、`workspace-guard` 等——它们会改变默认行为,是否开启属于产品口径)。
 
@@ -133,7 +132,7 @@ bin/ada check plugins
    (如 `shell-helper` 的 `program`、`task-helper` 依赖的 `fs` 栈);其它来源的 TS 插件仍需在
    发布项目里提供源码/Artifact 与清单。
 2. **preset 的资源路径按装配基目录解析**:`llm-replay`、`fs-local.workspace` 等配置是相对装配基目录的,
-   包根由脚本写入的 `.ada-base` 锚点标记。`ada` CLI(含 `ada acp`)与 `ada-rpc-agent` 都从 preset
+   包根由脚本写入的 `.ada-base` 锚点标记。`ada` CLI(含 `ada acp`)从 preset
    目录向上找 `go.mod` 或 `.ada-base` 并切到该目录再装配——所以宿主可以把 agent 进程启动在用户的
    工作区目录里,而 preset 仍写 `data/`、`workspace/` 这类包根相对路径。
 3. **没有真实端点自动探测**:真实 preset 的 endpoint/model 只来自参数,不在脚本里猜。

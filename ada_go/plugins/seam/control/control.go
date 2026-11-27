@@ -8,7 +8,7 @@
 //   - TS 实现:插件 ctx.provide("control", { invoke(method, params) {...} }),
 //     bridge 会把它包装成 Invoker 后再注册,插件系统本身不变。
 //
-// 协议适配层(control-rpc-v1 / control-acp)只依赖 Client,不关心底层是 Go 还是 TS。
+// 协议适配层(control-acp)只依赖 Client,不关心底层是 Go 还是 TS。
 package control
 
 import (

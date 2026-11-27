@@ -551,7 +551,7 @@ func cmdACP(args []string, in io.Reader, out, errOut io.Writer) int {
 // ACP 是客户端驱动的:客户端(ada_chat、编辑器)把 agent 启动在用户项目目录里,
 // session/new 的 cwd 也是同一个目录。preset 里写死的 workspace/ 只适合示例;
 // 不覆盖时 agent 会读写发布包自己的 workspace/,而不是用户的项目。
-// RPC 宿主(ada-rpc-agent)对同一语义有自己的补丁,这里只服务 ACP。
+// 桌面宿主(ada_chat)对同一语义有自己的补丁,这里只服务 ACP。
 func bindWorkspaceToCwd(manifests []*plugin.Manifest, cwd string) {
 	if cwd == "" {
 		return

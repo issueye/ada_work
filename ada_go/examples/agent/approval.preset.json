@@ -5,6 +5,7 @@
   ],
   "enable": [
     "agent-loop",
+    "approval-cli",
     "approval-gate",
     "compaction-basic",
     "fs-local",
@@ -33,7 +34,7 @@
       "model": "replay"
     },
     "approval-gate": {
-      "backend": "desktop-rpc",
+      "backend": "cli",
       "timeoutMs": 20000,
       "tools": [
         "read_file"

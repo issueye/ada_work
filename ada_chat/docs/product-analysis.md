@@ -45,7 +45,9 @@
   - 在 stdin/stdout 上说 ACP：`initialize` / `session/new|load|prompt|cancel` / `session/update` /
     `session/request_permission`；
   - 每个 ada_chat 对话一个 agent session（同进程共享 agent 配置、模型与 preset）。
-- `cmd/ada-rpc-agent` 与 seam RPC 栈仍留在 ada_go_v2（供其它客户端/测试使用），但**不再是 ada_chat 的运行时**。
+- `cmd/ada-rpc-agent` 与 `provider/control-rpc` 已随本仓库的 RPC 运行时一起移除；seam RPC 栈
+  （`seam/rpc` + `rpc-json`/`net`/`pipe`/`tls` + guard/observe）作为通用通讯能力保留，
+  但没有内置宿主入口。
 
 ### 1.3 已实际验证
 

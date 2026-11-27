@@ -13,7 +13,7 @@ const DefaultAPIKeyEnv = "ADA_LLM_API_KEY"
 
 // ProviderOverride 是宿主对 LLM 供应商的运行期选择;Provider 为空表示跟随 preset。
 //
-// 它属于「清单推导」而不是某个宿主适配器:CLI、server 与 ada-rpc-agent 都用它把
+// 它属于「清单推导」而不是某个宿主适配器:CLI 与 server 都用它把
 // 同一套宿主环境变量折成清单的 disable/config;放在 host/* 会让三处各写一份。
 type ProviderOverride struct {
 	Provider  string // openai | replay

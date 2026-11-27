@@ -66,7 +66,7 @@ try {
     }
     New-Item -ItemType Directory -Force -Path $pkg | Out-Null
 
-    # 装配基目录锚点:ada-rpc-agent 从 preset 目录向上找 go.mod 或 .ada-base。
+    # 装配基目录锚点:ada 从 preset 目录向上找 go.mod 或 .ada-base。
     # 发布包没有 go.mod，靠这个文件让 preset 里 data/workspace 的相对路径落在包根。
     Set-Content -LiteralPath (Join-Path $pkg ".ada-base") -Value "ada_go_v2 package root" -Encoding utf8
 
@@ -82,7 +82,7 @@ try {
             throw "编译失败(exit $LASTEXITCODE)"
         }
     }
-    foreach ($cmd in @("ada", "ada-rpc-agent", "ada-demo", "ada-ts-demo")) {
+    foreach ($cmd in @("ada", "ada-demo", "ada-ts-demo")) {
         $exe = Join-Path $binDir ($cmd + $ext)
         if (-not (Test-Path $exe)) {
             throw "缺少二进制: $exe"
@@ -138,7 +138,7 @@ try {
 
     # 发布 preset 默认启用「给 agent 用的」内置插件:工具、核心、seam 与各 provider 的默认实现。
     # 只保留三类例外:互斥实现(同一服务只能有一个 provider)、审批人(默认 deny/cli 二选一)、
-    # 宿主传输(rpc-* 由 ada-rpc-agent 自己装配)。
+    # 宿主传输(rpc-* 留给需要 RPC 的宿主自己装配)。
     $agentBase = @(
         "agent-loop", "plan", "compaction-basic", "fs-local", "llm-replay",
         "seam-fs", "seam-llm", "seam-prompts", "seam-session", "seam-tools",
@@ -322,8 +322,8 @@ presets/ 只引用 ../plugins、workspace/ 与 data/,不包含开发目录路径
 真实端点可用 LLMEndpoint/LLMModel 参数生成 agent-real-release.preset.json。
 
 环境变量:把 .env.example 复制为 .env 填写(API key 等),启动时补进环境;
-真实环境变量优先,文件内容不写日志。ada 读当前目录的 .env,ada-rpc-agent 读它自己
-可执行文件旁的 .env(不读工作区)。写法见源码仓库 docs/env-file.md。
+真实环境变量优先,文件内容不写日志。从包根运行 `ada`(含 `ada acp`)时读当前目录的 .env。
+写法见源码仓库 docs/env-file.md。
 "@
     [System.IO.File]::WriteAllText((Join-Path $pkg "README.txt"), ($readme.TrimEnd() + "`n"), $utf8)
     $envExample = @"

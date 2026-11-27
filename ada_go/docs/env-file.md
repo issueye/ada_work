@@ -6,9 +6,8 @@
 ## 1. 为什么需要
 
 现状是 `secrets-env` 读 `ADA_SECRET_<name>`、`llm-openai` 读它的 `apiKeyEnv`
-(默认 `ADA_LLM_API_KEY`)、`ada-rpc-agent` 读 `ADA_BOT_*` / `ADA_LLM_*`。
-它们都只看**进程环境**,于是每次试用都要先设一串环境变量,或者把 key 写进
-preset/config —— 后者违背 AGENTS 红线 13(secret 不进 config/日志)。
+(默认 `ADA_LLM_API_KEY`)。它们都只看**进程环境**,于是每次试用都要先设一串环境变量,
+或者把 key 写进 preset/config —— 后者违背 AGENTS 红线 13(secret 不进 config/日志)。
 
 `.env` 提供一个本机文件入口:**文件放值,环境里只用名字**,preset/config 保持干净。
 
@@ -16,18 +15,18 @@ preset/config —— 后者违背 AGENTS 红线 13(secret 不进 config/日志)�
 
 | 程序 | 读取的文件 | 说明 |
 | --- | --- | --- |
-| `ada`(CLI) | `./.env` | 相对当前工作目录;在发布包根运行即为包根文件 |
-| `ada-rpc-agent` | 可执行文件旁 `.env`,再读**它的父目录** `.env` | 发布包布局 `<root>/bin/ada-rpc-agent.exe` ⇒ `bin/.env` 与 `root/.env`;**不读 cwd** |
-| 两者 | `ADA_ENV_FILE` 指向的文件 | 设置后**只**读它(CI/测试用临时环境) |
+| `ada`(CLI,含 `ada acp`) | `./.env` | 相对当前工作目录;在发布包根运行即为包根文件 |
+| `ADA_ENV_FILE` | 指向的文件 | 设置后**只**读它(CI/测试用临时环境) |
 
 优先级(高 → 低):
 
 1. 真实环境变量(命令行、CI、宿主传入)——`.env` 不会覆盖已存在的键;
-2. 后加载的文件覆盖先加载的文件(目前两个入口各自只读一个文件,`denv.Apply` 支持多文件叠加);
+2. 后加载的文件覆盖先加载的文件(`denv.Apply` 支持多文件叠加);
 3. 文件里的值。
 
-`ada-rpc-agent` 只读 exe 旁的 `.env` 是**有意为之**:它的 cwd 是用户选的机器人工作区,
-工作区是被 agent 读写的不可信输入,不能让仓库里的 `.env` 改写模型端点或密钥。
+CLI 只读 cwd 的 `.env`:发布包里请从包根启动 `ada acp`;桌面壳(ada_chat)启动 agent 时
+把工作目录设成用户项目,工作区是被 agent 读写的不可信输入,不能让仓库里的 `.env` 改写
+模型端点或密钥 —— 桌面场景应当用 `seam/secrets` 或机器人环境变量提供密钥。
 
 ## 3. 语法
 
@@ -67,7 +66,8 @@ ADA_SECRET_DEEPSEEK_API_KEY=sk-...
 ```
 
 - CLI 直接生效:`ada agent --preset presets/agent-release.preset.json -message "..."`;
-- 桌面壳:它启动的 `ada-rpc-agent` 从自己的 exe 旁读同一份 `.env`,模型 key 自动可见;
+- 桌面壳:ada_chat 启动的 `ada acp` 用**机器人环境变量**或 `seam/secrets` 拿 key,
+  不读工作区里的 `.env`(工作区是 agent 读写范围,属不可信输入);
 - 想换一份环境:设 `ADA_ENV_FILE=/path/to/other.env`(只读它,不再读默认文件)。
 
 ## 5. 安全边界
@@ -80,7 +80,8 @@ ADA_SECRET_DEEPSEEK_API_KEY=sk-...
   而不是 `.env`。
 - **授权没有被绕过**:`secrets-env` 的 `allow` 白名单与 `secrets-guard` 的
   `secrets.<name>` 授权仍照旧生效;`.env` 只是让 `ADA_SECRET_*` 有地方放。
-- **不读工作区**:见 §2——只有 CLI 读 cwd,`ada-rpc-agent` 只读可执行文件旁与它的父目录(包根)。
+- **CLI 只读自己的 cwd**:见 §2——发布包里从包根启动;桌面壳走机器人环境变量,
+  不让用户工作区里的文件改写模型端点。
 
 ## 6. 测试与验证
 

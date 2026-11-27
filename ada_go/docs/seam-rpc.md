@@ -1,6 +1,6 @@
 # seam/rpc 与 RPC 通讯协议插件
 
-> 状态:**P0–P3 已实现,P4 TLS 已实现(2026-11-20);`SO_PEERCRED` 待做,桌面接入原型已落地(`cmd/ada-rpc-agent`)**。已落地:`plugins/seam/rpc`(契约)、`plugins/provider/rpc-json`(帧/握手/调用/事件/取消)、`plugins/provider/rpc-net`(tcp/unix)、`plugins/provider/rpc-pipe`(Windows 命名管道,overlapped 流)、`plugins/policy/rpc-guard`(授权/地址/方法/对端/鉴权)、`plugins/policy/rpc-observe`(`rpc/observe`)、`plugins/provider/rpc-tls`(`tls://`)、`cmd/ada-rpc-agent`(把 agent preset 做成每机器人一个进程的 RPC 宿主)。
+> 状态:**P0–P3 已实现,P4 TLS 已实现(2026-11-20);`SO_PEERCRED` 待做**。已落地:`plugins/seam/rpc`(契约)、`plugins/provider/rpc-json`(帧/握手/调用/事件/取消)、`plugins/provider/rpc-net`(tcp/unix)、`plugins/provider/rpc-pipe`(Windows 命名管道,overlapped 流)、`plugins/policy/rpc-guard`(授权/地址/方法/对端/鉴权)、`plugins/policy/rpc-observe`(`rpc/observe`)、`plugins/provider/rpc-tls`(`tls://`)。**宿主接入**:ada_chat 已改用 ACP,原来的 `cmd/ada-rpc-agent` RPC 宿主与 `provider/control-rpc` 适配器已移除;RPC 栈作为通用通讯能力保留,供其它客户端/测试使用。
 >
 > 五层控制架构(RPC/ACP)见 [rpc-control-layers.md](rpc-control-layers.md)。
 >
@@ -526,7 +526,7 @@ func Plugin() kernel.Plugin // 提供 "rpc"(空 Chain)与 "rpc-transport"(Regist
 | **P1** | `rpc-net`(tcp loopback + unix;Windows AF_UNIX);权限/stale/Addr;集成测试 | ✅ Linux/macOS/Windows 全绿;`unix` 权限测试在支持平台通过 |
 | **P2** | `rpc-pipe`(Windows 命名管道 + ACL + 拒绝远程客户端);非 Windows 空实现 | ✅ Windows CI/本机 `go test ./plugins/provider/rpc-pipe`;`GOOS=linux` 构建通过 |
 | **P3** | `rpc-guard` + `rpc-observe`;caps 语法 `rpc.call`/`rpc.listen`;audit 接入;principal 改写 | ✅ `go test -race ./plugins/policy/rpc-guard ./plugins/policy/rpc-observe`;caps 拒绝接 `caps/deny` |
-| **P4** | TLS/远程 TCP、`SO_PEERCRED`、宿主接入(`ada serve --rpc` 或 desktop Transport 可选) | ⚠️ TLS + 远程 TCP 已落地(`rpc-tls`);`SO_PEERCRED` 待做;宿主接入原型 `cmd/ada-rpc-agent` 已落地(每机器人一个进程、workspace 为工作目录、`bot.info`/`chat.send`,并按运行时地址/客户端名挂 `rpc-guard` + `rpc-observe`;见该目录 README) |
+| **P4** | TLS/远程 TCP、`SO_PEERCRED`、宿主接入(`ada serve --rpc` 或 desktop Transport 可选) | ⚠️ TLS + 远程 TCP 已落地(`rpc-tls`);`SO_PEERCRED` 待做;**宿主接入未落地**:ada_chat 改用 ACP 后,原 `cmd/ada-rpc-agent` 原型已移除 |
 
 预算(超了先拆或写 ADR):seam ≤ 400 行;`rpc-json` ≤ 1200(ADR 0009);`rpc-net` ≤ 400;`rpc-pipe` ≤ 500(仅 windows 文件);`rpc-tls` ≤ 300;`rpc-guard` ≤ 400;`rpc-observe` ≤ 200。
 

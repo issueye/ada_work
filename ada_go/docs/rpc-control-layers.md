@@ -1,6 +1,7 @@
 # RPC/ACP 五层控制架构
 
-> 状态：**第 2 层控制契约 + Go/TS 实现、第 3 层 control-rpc/ACP 适配、第 4 层 jsonrpc2、第 5 层 stdio、宿主入口 `ada acp` 已落地**；ACP 的 permission、fs/terminal 反向能力与 `acp-helper` 已接，MCP 与会话级路由待做。
+> 状态：**第 2 层控制契约 + Go/TS 实现、第 3 层 ACP 适配、第 4 层 jsonrpc2、第 5 层 stdio、宿主入口 `ada acp` 已落地**；ACP 的 permission、fs/terminal 反向能力与 `acp-helper` 已接，MCP 与会话级路由待做。
+> RPC 侧的 `control-rpc` 适配器已随 `cmd/ada-rpc-agent` 一起移除（ada_chat 改用 ACP）；seam RPC 栈本身保留。
 > 关联：[seam-rpc.md](seam-rpc.md)、[AGENTS §2/§3](../AGENTS.md)。
 
 ## 0. 结论
@@ -12,11 +13,11 @@ ada_go 能力（agent-loop / session / tools / fs / shell）
         ↑
 控制层（seam/control：session / prompt / cancel / permission / update）
         ↑
-协议适配层（control-rpc-v1 | control-acp）
+协议适配层（control-acp）
         ↑
-消息通道/编码（rpc-v1-frame | jsonrpc2）
+消息通道/编码（jsonrpc2）
         ↑
-传输（tcp | unix | pipe | tls | stdio）
+传输（stdio）
 ```
 
 方向是“能力 ← 控制 ← 协议 ← 编码 ← 传输”。依赖只能向上：控制层不认 frame/stdio，
@@ -98,8 +99,7 @@ prompt 未返回时到达对端（不是结束后补发）。
 | `core/agent-control` | 2 实现 | ✅ `agent.runner` → `control.Invoker`；create/load/list/prompt/history/cancel/permission/close；token 级 `assistant/delta`；取消返回 `cancelled`；`load` 可按 id 恢复；同一会话单轮串行 |
 | `core/plan` | 2 实现 | ✅ 会话级计划：`plan_set` / `plan_update` / `plan_show`；计划写成 `plugin:plan/updated` session 事件；ACP 映射成 `plan` |
 | `seam/agent` | 能力契约 | ✅ `Runner`（Open/Run） |
-| `provider/rpc-json` | 3+4 | ◐ 现有 v1 协议；尚未拆成 control 适配 + frame 通道 |
-| `provider/control-rpc` | 3 | ✅ v1 方法 ↔ `control.Invoker`（Client + Register）；已用真实 rpc-json + tcp 跑通端到端 |
+| `provider/rpc-json` | 3+4 | ◐ 现有 v1 协议；不对接控制层（原 `control-rpc` 适配器已移除） |
 | `provider/jsonrpc2` | 4 | ✅ 双向 JSON-RPC 2.0 连接、id/错误/通知、行上限、`null` 结果；连接关闭会取消 handler ctx |
 | `provider/control-acp` | 3 | ✅ initialize/session/new/load/prompt/cancel；`session/load` 回放历史；`session/update` 实时转发（assistant 文本/推理 + tool_call/tool_call_update）；`session/request_permission` + `approval.Approver`；反向 fs/terminal 能力 |
 | `seam/acp` | 2 契约 | ✅ client 能力契约 + `Registry`（单连接绑定） |
@@ -147,19 +147,6 @@ ACP 适配器从会话事件里提取文本，而不是把整段 JSON 当文本�
 未知工具状态按 `failed` 处理（fail-closed）。
 
 ## 6. 协议适配方向
-
-### control-rpc-v1
-
-把现有方法映射到 `control.Client`：
-
-```
-control.session.create  -> Client.Create
-control.session.prompt  -> Client.Prompt
-control.session.cancel  -> Client.Cancel
-control.event           -> EventUpdate
-```
-
-现有 `agent.session.*` 消费者通过这一层过渡；wire 格式不变。
 
 ### control-acp
 
@@ -273,19 +260,18 @@ agent-control + tool-helper，不依赖网络与磁盘会话；回放里带一�
 
 1. 控制契约 + Go/TS 实现通路（已完成；Go 由 `core/agent-control`，TS 由 bridge 包装）；
 2. `provider/jsonrpc2` + `provider/rpc-stdio`（已完成）；
-3. `provider/control-rpc`，把现有 v1 消费者切到控制层（适配器 + 真实 rpc-json/tcp 端到端已完成，消费者迁移待做）；
-4. `provider/control-acp` 最小聊天闭环（已完成）；
-5. 权限（已完成）：`session/request_permission` ↔ `approval.Approver`；
-6. 宿主入口（已完成）：`ada acp` + `examples/acp`；
-7. 会话恢复（已完成）：`session.history` + `session.Resumer` + `session/load` 回放；
-8. 文件/终端反向能力（已完成契约、适配与 `acp-helper` 工具）；MCP 与会话级路由待做。
+3. `provider/control-acp` 最小聊天闭环（已完成）；
+4. 权限（已完成）：`session/request_permission` ↔ `approval.Approver`；
+5. 宿主入口（已完成）：`ada acp` + `examples/acp`；
+6. 会话恢复（已完成）：`session.history` + `session.Resumer` + `session/load` 回放；
+7. 文件/终端反向能力（已完成契约、适配与 `acp-helper` 工具）；MCP 与会话级路由待做。
+   RPC 侧的 `control-rpc` 适配器与 `cmd/ada-rpc-agent` 宿主已移除（ada_chat 改用 ACP）。
 
 ## 8. 验证
 
 ```powershell
-go test ./plugins/seam/control ./plugins/provider/control-rpc ./plugins/provider/control-acp
-go test -race ./plugins/seam/control ./plugins/provider/control-rpc ./plugins/provider/control-acp ./plugins/core/agent-control
-go test -run TestControlOverRPCJSON -v ./plugins/provider/control-rpc
+go test ./plugins/seam/control ./plugins/provider/control-acp
+go test -race ./plugins/seam/control ./plugins/provider/control-acp ./plugins/core/agent-control
 go test -run TestACPServe -v ./platform/host/cli
 ```
 
