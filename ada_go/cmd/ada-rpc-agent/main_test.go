@@ -1,27 +1,13 @@
 package main
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/issueye/ada_go_v2/platform/catalog"
 	seamllm "github.com/issueye/ada_go_v2/plugins/seam/llm"
 )
-
-func TestAssemblyBaseFindsPackageMarker(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, packageBaseMarker), []byte("root\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	presets := filepath.Join(dir, "presets")
-	if err := os.MkdirAll(presets, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if got := assemblyBase(presets); got != dir {
-		t.Fatalf("assemblyBase(%q)=%q, want %q", presets, got, dir)
-	}
-}
 
 func TestIdentityForTrimsInstruction(t *testing.T) {
 	got := identityFor("代码助手", "  先读文件  ")
@@ -70,7 +56,7 @@ func TestApplyPersonaReplacesDefaultIdentity(t *testing.T) {
 }
 
 func TestLoadManifestsPatchesAgentForTheWorkingDirectory(t *testing.T) {
-	root := assemblyBase(".")
+	root := catalog.FindBase(".")
 	if root == "" {
 		t.Fatal("module root not found")
 	}
@@ -111,7 +97,7 @@ func TestSessionKey(t *testing.T) {
 }
 
 func TestProviderOverrideSwitchesPreset(t *testing.T) {
-	root := assemblyBase(".")
+	root := catalog.FindBase(".")
 	if root == "" {
 		t.Fatal("module root not found")
 	}

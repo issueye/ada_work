@@ -57,6 +57,9 @@ cmd/ada/     只做 os.Exit(cli.Run(os.Args[1:], os.Stdout, os.Stderr))
 3. **文本输出是人读契约,不是机器契约**:脚本请用 `-json`(plan/inspect)。
 4. **交互式审批已可选**:`provider/approval-cli` 提供 stdin/stdout 审批;默认拒绝人仍是默认策略。
 5. **没有 `ada version`**:宿主版本需由调用方提供。
+6. **`--preset` 按装配基目录加载**:CLI 从 preset 目录向上找 `go.mod`(源码)或 `.ada-base`(发布包)并切到该目录再装配,
+   所以 `ada acp`/`ada agent` 可以在用户工作区目录里被宿主启动,而 preset 里的 `data/`、`workspace/` 仍按包根解析
+   (见 [packaging.md](packaging.md) §6)。
 
 ## 5. 下一步
 

@@ -21,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/issueye/ada_go_v2/platform/assemble"
+	"github.com/issueye/ada_go_v2/platform/catalog"
 	"github.com/issueye/ada_go_v2/platform/denv"
 	"github.com/issueye/ada_go_v2/platform/host/builtins"
 	"github.com/issueye/ada_go_v2/platform/kernel"
@@ -56,10 +57,6 @@ const (
 	envLLMEndpoint = "ADA_LLM_ENDPOINT"
 	envLLMModel    = "ADA_LLM_MODEL"
 	envLLMAPIKey   = "ADA_LLM_API_KEY"
-
-	// packageBaseMarker 是发布包的装配基目录锚点;发布包没有 go.mod，
-	// preset 里的 data/workspace 相对路径靠它落到包根(见 docs/packaging.md)。
-	packageBaseMarker = ".ada-base"
 )
 
 func main() {
@@ -133,7 +130,7 @@ func run() error {
 	// Presets often use paths relative to the assembly base (the ada_go_v2 module
 	// root in a checkout, the package root in a release). Assemble in that base
 	// directory, then return to the selected working directory before serving.
-	base := firstNonEmpty(os.Getenv(envPresetBase), assemblyBase(filepath.Dir(presetPath)), filepath.Dir(presetPath))
+	base := firstNonEmpty(os.Getenv(envPresetBase), catalog.FindBase(filepath.Dir(presetPath)), filepath.Dir(presetPath))
 	restoreCwd := false
 	if base != "" && !samePath(base, workspace) {
 		if err := os.Chdir(base); err != nil {
@@ -882,29 +879,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-// assemblyBase walks up from start until it finds an assembly base anchor:
-// go.mod in a source checkout, .ada-base in a release package. It lets presets
-// that reference base-relative files (llm-replay's replay.jsonl, workspace roots)
-// keep working when the bot process is started in another working directory.
-func assemblyBase(start string) string {
-	dir, err := filepath.Abs(start)
-	if err != nil {
-		return ""
-	}
-	for {
-		for _, anchor := range []string{"go.mod", packageBaseMarker} {
-			if fi, err := os.Stat(filepath.Join(dir, anchor)); err == nil && !fi.IsDir() {
-				return dir
-			}
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
-	}
 }
 
 func samePath(a, b string) bool {

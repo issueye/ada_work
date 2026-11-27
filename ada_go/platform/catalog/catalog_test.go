@@ -104,3 +104,44 @@ func mustRead(t *testing.T, path string) []byte {
 	}
 	return data
 }
+
+// TestFindBaseAnchors 覆盖装配基目录的两种锚点:发布包的 .ada-base 与源码根的 go.mod。
+func TestFindBaseAnchors(t *testing.T) {
+	pkg := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pkg, BaseMarker), []byte("root\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	presets := filepath.Join(pkg, "presets")
+	if err := os.MkdirAll(presets, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := FindBase(presets); got != pkg {
+		t.Fatalf("FindBase(%q)=%q, want %q", presets, got, pkg)
+	}
+
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "go.mod"), []byte("module x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(src, "examples", "agent")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := FindBase(nested); got != src {
+		t.Fatalf("FindBase(%q)=%q, want %q", nested, got, src)
+	}
+
+	if got := FindBase(t.TempDir()); got != "" {
+		t.Fatalf("没有锚点的目录应返回空串,得到 %q", got)
+	}
+}
+
+func TestSameIndir(t *testing.T) {
+	dir := t.TempDir()
+	if !SameIndir(dir, filepath.Join(dir, ".")) {
+		t.Fatal("同一目录应判定为同一路径")
+	}
+	if SameIndir(dir, filepath.Join(dir, "missing")) {
+		t.Fatal("不同路径不应判定为同一目录")
+	}
+}

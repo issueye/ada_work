@@ -1280,3 +1280,31 @@ func TestACPServe(t *testing.T) {
 		t.Fatalf("acp 没有退出,stderr=%s", errOut.String())
 	}
 }
+
+// preset 里的资源路径(replay 脚本、workspace 根)按「装配基目录」解析:
+// 宿主(ada_chat、编辑器)常在用户工作区目录里启动 agent,若按进程 cwd 解析,
+// llm-replay 打开脚本会失败,ACP 表现为「连接已关闭」。
+func TestPresetResourcesResolveFromAssemblyBase(t *testing.T) {
+	root, err := filepath.Abs("../../..")
+	if err != nil {
+		t.Fatalf("定位模块根失败: %v", err)
+	}
+	presetPath := filepath.Join(root, "examples", "agent", "agent.preset.json")
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("读取 cwd 失败: %v", err)
+	}
+	foreign := t.TempDir()
+	if err := os.Chdir(foreign); err != nil {
+		t.Fatalf("进入临时工作区失败: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	code, out, errOut := run("inspect", "--preset", presetPath)
+	if code != 0 {
+		t.Fatalf("从外部 cwd 装配应成功: code=%d err=%s", code, errOut)
+	}
+	if strings.Contains(errOut, "打开脚本失败") || strings.Contains(out, "打开脚本失败") {
+		t.Fatalf("replay 脚本应按装配基目录解析,而不是进程 cwd: %s%s", out, errOut)
+	}
+}

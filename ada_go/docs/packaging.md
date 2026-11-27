@@ -120,14 +120,15 @@ bin/ada check plugins
 
 ## 6. 边界
 
-1. **Go 内置插件自动导出,TS 插件按目录复制**:`builtins-dump` 只包含 Go 插件;
-   内置 TS 工具(`text-helper`/`shell-helper`)与 `examples/*/plugins` 下 `kind=ts` 的示例
-   脚本插件由脚本复制源码与清单。示例插件只是「随包但不启用」的候选实现,启用时要补
-   它自己的配置(如 `shell-helper` 的 `program`、`task-helper` 依赖的 `fs` 栈);
-   其它来源的 TS 插件仍需在发布项目里提供源码/Artifact 与清单。
-2. **preset 路径以包根为装配基目录**:`llm-replay`、`fs-local.workspace` 等配置是相对装配基目录的,
-   包根由脚本写入的 `.ada-base` 锚点标记;`ada` CLI 从包根运行即可,`ada-rpc-agent` 从 preset 目录
-   向上找 `go.mod` 或 `.ada-base`,所以桌面宿主可以直接把 `Agent preset` 指向 `presets/agent-release.preset.json`。
+1. **Go 清单自动导出,TS 插件按清单复制**:`builtins-dump` 只导出 Go 插件的清单;仓库 `plugins/`
+   下 `kind=ts` 的插件(工具类 `text`/`shell`/`memory`/`http`/`plugin`/`skill`/`git`/`task`/`command-helper`)
+   由脚本按清单发现并复制源码与清单。它们默认「随包但不启用」,启用时要补自己的配置
+   (如 `shell-helper` 的 `program`、`task-helper` 依赖的 `fs` 栈);其它来源的 TS 插件仍需在
+   发布项目里提供源码/Artifact 与清单。
+2. **preset 的资源路径按装配基目录解析**:`llm-replay`、`fs-local.workspace` 等配置是相对装配基目录的,
+   包根由脚本写入的 `.ada-base` 锚点标记。`ada` CLI(含 `ada acp`)与 `ada-rpc-agent` 都从 preset
+   目录向上找 `go.mod` 或 `.ada-base` 并切到该目录再装配——所以宿主可以把 agent 进程启动在用户的
+   工作区目录里,而 preset 仍写 `data/`、`workspace/` 这类包根相对路径。
 3. **没有真实端点自动探测**:真实 preset 的 endpoint/model 只来自参数,不在脚本里猜。
 4. **zip 只是本地产物**:未做签名/公证/安装器;发布签名仍走 `install` 的密钥体系。
 5. **交叉编译不能在本机执行自检**:这是有意跳过,不代表包已验证目标平台的运行时行为。

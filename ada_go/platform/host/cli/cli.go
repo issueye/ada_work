@@ -18,6 +18,7 @@ import (
 
 	"github.com/issueye/ada_go_v2/platform/assemble"
 	"github.com/issueye/ada_go_v2/platform/caps"
+	"github.com/issueye/ada_go_v2/platform/catalog"
 	hostacp "github.com/issueye/ada_go_v2/platform/host/acp"
 	"github.com/issueye/ada_go_v2/platform/host/builtins"
 	"github.com/issueye/ada_go_v2/platform/install"
@@ -41,10 +42,16 @@ func Run(args []string, out, errOut io.Writer) int {
 //
 // 只有流式命令(acp)会读 in;其余命令忽略它。单独暴露是为了让测试
 // 不必替换 os.Stdin。
+//
+// 命令结束时恢复进入前的 cwd:装配基目录的切换只服务于本命令内的资源解析,
+// 不能泄漏给同进程里的下一次调用(测试与内嵌宿主会一次跑多条命令)。
 func RunWithIO(args []string, in io.Reader, out, errOut io.Writer) int {
 	if len(args) == 0 {
 		usage(errOut)
 		return 2
+	}
+	if start, err := os.Getwd(); err == nil {
+		defer func() { _ = os.Chdir(start) }()
 	}
 	switch args[0] {
 	case "plan":
@@ -159,7 +166,13 @@ func parseTarget(args []string) target {
 func loadTarget(t target) ([]*plugin.Manifest, error) {
 	switch {
 	case t.preset != "":
-		p, err := preset.Load(t.preset)
+		// preset 里的资源路径按包根书写;宿主(ada_chat、编辑器)常在用户工作区里
+		// 启动 agent,不切到基目录就会去用户目录里找 replay/workspace 文件而装配失败。
+		presetPath, err := enterPresetBase(t.preset)
+		if err != nil {
+			return nil, err
+		}
+		p, err := preset.Load(presetPath)
 		if err != nil {
 			return nil, err
 		}
@@ -173,6 +186,29 @@ func loadTarget(t target) ([]*plugin.Manifest, error) {
 	default:
 		return nil, fmt.Errorf("需要给出插件目录或 --preset 文件")
 	}
+}
+
+// enterPresetBase 进入 preset 所在包的装配基目录,返回 preset 的绝对路径。
+//
+// 基目录是从 preset 目录向上找到 go.mod(源码)或 .ada-base(发布包)的目录;
+// 找不到就按原样(相对当前 cwd)加载,不猜路径。
+func enterPresetBase(presetPath string) (string, error) {
+	abs, err := filepath.Abs(presetPath)
+	if err != nil {
+		return "", fmt.Errorf("解析 preset 路径 %s: %w", presetPath, err)
+	}
+	base := catalog.FindBase(filepath.Dir(abs))
+	if base == "" {
+		return abs, nil
+	}
+	cwd, err := os.Getwd()
+	if err == nil && catalog.SameIndir(base, cwd) {
+		return abs, nil
+	}
+	if err := os.Chdir(base); err != nil {
+		return "", fmt.Errorf("进入 preset 基目录 %s: %w", base, err)
+	}
+	return abs, nil
 }
 
 // mountAll 是 up 与 inspect 共用的挂载逻辑:失败时停掉半装的 app。
