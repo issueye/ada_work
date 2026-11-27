@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -169,6 +170,37 @@ func TestDone(t *testing.T) {
 		t.Fatal("Close 后 Done 应关闭")
 	}
 }
+
+// TestDrainsInFlightDispatchOnReadEnd 对端发完请求立即关闭输入(EOF)时,
+// 服务端仍须把 in-flight handler 的响应写出,而不是被 EOF 抢先关闭连接丢掉响应。
+func TestDrainsInFlightDispatchOnReadEnd(t *testing.T) {
+	msg := `{"jsonrpc":"2.0","id":1,"method":"echo","params":{}}` + "\n"
+	w := &scriptRWC{in: strings.NewReader(msg)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	conn := New(ctx, w)
+	conn.Handle("echo", func(context.Context, json.RawMessage) (any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	select {
+	case <-conn.Done():
+	case <-time.After(time.Second):
+		t.Fatal("读侧 EOF 后连接应关闭")
+	}
+	got := w.out.String()
+	if !strings.Contains(got, `"id":1`) || !strings.Contains(got, `"ok":true`) {
+		t.Fatalf("响应在 EOF 前未写出: %q", got)
+	}
+}
+
+type scriptRWC struct {
+	in  io.Reader
+	out bytes.Buffer
+}
+
+func (s *scriptRWC) Read(p []byte) (int, error)  { return s.in.Read(p) }
+func (s *scriptRWC) Write(p []byte) (int, error) { return s.out.Write(p) }
+func (s *scriptRWC) Close() error                { return nil }
 
 func TestNullResult(t *testing.T) {
 	a, b := pipePair(t)

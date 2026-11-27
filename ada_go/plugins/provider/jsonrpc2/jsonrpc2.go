@@ -113,6 +113,9 @@ type Conn struct {
 	handlers map[string]Handler
 	pending  map[string]chan Message
 
+	// wg 追踪进行中的 dispatch;读侧结束时先排空,再关闭连接,避免丢响应。
+	wg sync.WaitGroup
+
 	done      chan struct{}
 	closeOnce sync.Once
 	cancel    context.CancelFunc
@@ -198,6 +201,8 @@ func (c *Conn) Call(ctx context.Context, method string, params, result any) erro
 		delete(c.pending, key)
 		c.mu.Unlock()
 		return ctx.Err()
+	case <-c.ctx.Done():
+		return c.errOrClosed()
 	case <-c.done:
 		return c.errOrClosed()
 	}
@@ -253,6 +258,14 @@ func (c *Conn) fail(err error) {
 	c.Close()
 }
 
+// drainOnReadEnd 读侧结束(EOF/读错误)时:先取消连接 ctx 解除进行中 Call 的阻塞,
+// 等 in-flight dispatch 写完响应,再关闭连接;避免对端关闭输入后抢在响应写出前关闭输出、丢掉响应。
+func (c *Conn) drainOnReadEnd(err error) {
+	c.cancel()
+	c.wg.Wait()
+	c.fail(err)
+}
+
 func (c *Conn) write(msg Message) error {
 	b, err := json.Marshal(msg)
 	if err != nil {
@@ -278,7 +291,7 @@ func (c *Conn) readLoop() {
 	for {
 		msg, err := readMessage(c.br, c.opt.maxLine)
 		if err != nil {
-			c.fail(err)
+			c.drainOnReadEnd(err)
 			return
 		}
 		switch {
@@ -292,11 +305,13 @@ func (c *Conn) readLoop() {
 				ch <- msg
 			}
 		case msg.IsRequest():
+			c.wg.Add(1)
 			go c.dispatch(msg, true)
 		case msg.IsNotification():
 			if c.opt.notificationFn != nil {
 				c.opt.notificationFn(msg)
 			}
+			c.wg.Add(1)
 			go c.dispatch(msg, false)
 		default:
 			c.fail(fmt.Errorf("jsonrpc2: 非法消息"))
@@ -306,6 +321,7 @@ func (c *Conn) readLoop() {
 }
 
 func (c *Conn) dispatch(msg Message, reply bool) {
+	defer c.wg.Done()
 	c.mu.Lock()
 	h := c.handlers[msg.Method]
 	c.mu.Unlock()
