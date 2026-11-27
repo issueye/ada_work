@@ -55,7 +55,7 @@ const (
 	envLLMProvider = "ADA_LLM_PROVIDER"
 	envLLMEndpoint = "ADA_LLM_ENDPOINT"
 	envLLMModel    = "ADA_LLM_MODEL"
-	envLLMAPIKey   = builtins.DefaultAPIKeyEnv
+	envLLMAPIKey   = catalog.DefaultAPIKeyEnv
 )
 
 func main() {
@@ -717,8 +717,8 @@ func blockText(blocks []seamllm.Block, limit int) string {
 	return out
 }
 
-// llmOverride 是 builtins.ProviderOverride 的别名:保留旧名字让测试与调用点读起来不变。
-type llmOverride = builtins.ProviderOverride
+// llmOverride 是 catalog.ProviderOverride 的别名:保留旧名字让测试与调用点读起来不变。
+type llmOverride = catalog.ProviderOverride
 
 func loadManifests(presetPath, workspace, name, instruction string, ov llmOverride) ([]*plugin.Manifest, error) {
 	p, err := preset.Load(presetPath)
@@ -745,7 +745,7 @@ func loadManifests(presetPath, workspace, name, instruction string, ov llmOverri
 			setConfig(m, "identity", identityFor(name, instruction))
 		}
 	}
-	if err := builtins.ApplyProviderOverride(manifests, ov); err != nil {
+	if err := catalog.ApplyProviderOverride(manifests, ov); err != nil {
 		return nil, err
 	}
 	return manifests, nil
@@ -780,26 +780,6 @@ func enabledManifest(manifests []*plugin.Manifest, id string) *plugin.Manifest {
 		}
 	}
 	return nil
-}
-
-func setAgentModel(manifests []*plugin.Manifest, model string) {
-	if m := findManifest(manifests, "agent-loop"); m != nil {
-		setConfig(m, "model", model)
-	}
-}
-
-func replayModel(m *plugin.Manifest) string {
-	if v, ok := m.Config["defaultModel"].(string); ok && strings.TrimSpace(v) != "" {
-		return strings.TrimSpace(v)
-	}
-	if models, ok := m.Config["models"].([]any); ok && len(models) > 0 {
-		if first, ok := models[0].(map[string]any); ok {
-			if id, ok := first["id"].(string); ok && strings.TrimSpace(id) != "" {
-				return strings.TrimSpace(id)
-			}
-		}
-	}
-	return "replay"
 }
 
 func setConfig(m *plugin.Manifest, key string, value any) {

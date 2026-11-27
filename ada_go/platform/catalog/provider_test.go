@@ -1,4 +1,4 @@
-package builtins
+package catalog
 
 import (
 	"strings"
@@ -24,8 +24,8 @@ func TestApplyProviderOverrideOpenAI(t *testing.T) {
 	if err := ApplyProviderOverride(ms, ov); err != nil {
 		t.Fatalf("覆盖失败: %v", err)
 	}
-	openaiM := findBuiltin(ms, "llm-openai")
-	replayM := findBuiltin(ms, "llm-replay")
+	openaiM := findManifest(ms, "llm-openai")
+	replayM := findManifest(ms, "llm-replay")
 	if openaiM.Disabled {
 		t.Fatal("llm-openai 应启用")
 	}
@@ -41,7 +41,7 @@ func TestApplyProviderOverrideOpenAI(t *testing.T) {
 	if got := openaiM.Config["apiKeyEnv"]; got != DefaultAPIKeyEnv {
 		t.Fatalf("apiKeyEnv=%v", got)
 	}
-	if got := findBuiltin(ms, "agent-loop").Config["model"]; got != "mock-model" {
+	if got := findManifest(ms, "agent-loop").Config["model"]; got != "mock-model" {
 		t.Fatalf("agent-loop model=%v", got)
 	}
 }
@@ -52,7 +52,7 @@ func TestApplyProviderOverrideDefaults(t *testing.T) {
 	if err := ApplyProviderOverride(ms, ProviderOverride{Provider: "openai"}); err != nil {
 		t.Fatal(err)
 	}
-	openaiM := findBuiltin(ms, "llm-openai")
+	openaiM := findManifest(ms, "llm-openai")
 	if openaiM.Config["endpoint"] != openai.DefaultEndpoint || openaiM.Config["model"] != openai.DefaultModel {
 		t.Fatalf("默认端点/模型未生效: %v", openaiM.Config)
 	}
@@ -64,13 +64,13 @@ func TestApplyProviderOverrideReplay(t *testing.T) {
 	if err := ApplyProviderOverride(ms, ProviderOverride{Provider: "replay"}); err != nil {
 		t.Fatal(err)
 	}
-	if findBuiltin(ms, "llm-openai").Disabled == false {
+	if findManifest(ms, "llm-openai").Disabled == false {
 		t.Fatal("llm-openai 应停用")
 	}
-	if findBuiltin(ms, "llm-replay").Disabled {
+	if findManifest(ms, "llm-replay").Disabled {
 		t.Fatal("llm-replay 应启用")
 	}
-	if got := findBuiltin(ms, "agent-loop").Config["model"]; got != "replay" {
+	if got := findManifest(ms, "agent-loop").Config["model"]; got != "replay" {
 		t.Fatalf("agent-loop model=%v", got)
 	}
 }

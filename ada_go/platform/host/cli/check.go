@@ -137,92 +137,76 @@ func cmdCheck(args []string, out, errOut io.Writer) int {
 	return 1
 }
 
-func cmdServeRepo(args []string, out, errOut io.Writer) int {
-	root := ""
-	addr := "127.0.0.1:8080"
-	token := ""
-	certFile := ""
-	keyFile := ""
-	rateLimit := 0
-	bad := ""
+// serveFlags 是 serve / serve-repo 共用的命令行参数。
+type serveFlags struct {
+	root      string
+	addr      string
+	token     string
+	certFile  string
+	keyFile   string
+	rateLimit int
+}
+
+// parseServeFlags 解析共用参数;地址缺省是 127.0.0.1:8080。
+//
+// 两个 serve 子命令的开关集完全相同(仓库服务多一个可选 -rate-limit 的默认值),
+// 因此共用一份解析:分成两份曾让 cmdServe 里出现重复分支。
+func parseServeFlags(args []string) (serveFlags, string) {
+	f := serveFlags{addr: "127.0.0.1:8080"}
 	for i := 0; i < len(args); i++ {
-		switch a := args[i]; {
-		case a == "-root":
-			if i+1 >= len(args) {
-				bad = "-root 缺少目录参数"
-				break
-			}
-			root = args[i+1]
-			i++
-		case a == "-addr":
-			if i+1 >= len(args) {
-				bad = "-addr 缺少地址参数"
-				break
-			}
-			addr = args[i+1]
-			i++
-		case a == "-token":
-			if i+1 >= len(args) {
-				bad = "-token 缺少值"
-				break
-			}
-			token = args[i+1]
-			i++
-		case a == "-rate-limit":
-			if i+1 >= len(args) {
-				bad = "-rate-limit 缺少数值"
-				break
-			}
+		a := args[i]
+		if i+1 >= len(args) {
+			return f, a + " 缺少参数"
+		}
+		switch a {
+		case "-root":
+			f.root = args[i+1]
+		case "-addr":
+			f.addr = args[i+1]
+		case "-token":
+			f.token = args[i+1]
+		case "-cert":
+			f.certFile = args[i+1]
+		case "-key":
+			f.keyFile = args[i+1]
+		case "-rate-limit":
 			n, err := strconv.Atoi(args[i+1])
 			if err != nil {
-				bad = "-rate-limit 必须是整数"
-			} else {
-				rateLimit = n
+				return f, "-rate-limit 必须是整数"
 			}
-			i++
-		case a == "-cert":
-			if i+1 >= len(args) {
-				bad = "-cert 缺少文件"
-				break
-			}
-			certFile = args[i+1]
-			i++
-		case a == "-key":
-			if i+1 >= len(args) {
-				bad = "-key 缺少文件"
-				break
-			}
-			keyFile = args[i+1]
-			i++
+			f.rateLimit = n
 		default:
-			bad = "未知参数 " + a
+			return f, "未知参数 " + a
 		}
-		if bad != "" {
-			break
-		}
+		i++
 	}
+	if f.root == "" {
+		return f, "需要 -root 根目录"
+	}
+	return f, ""
+}
+
+// serveCommand 是 serve / serve-repo 的共同实现:解析参数、监听、交给适配器。
+//
+// 两个适配器的 Options 是各自包里的类型(字段同形但不通用),所以由调用方把
+// flags 折成自己的 Options;这里只共享参数、监听与输出。
+func serveCommand(args []string, out, errOut io.Writer, label string,
+	serve func(context.Context, serveFlags, net.Listener) error) int {
+	f, bad := parseServeFlags(args)
 	if bad != "" {
 		fmt.Fprintln(errOut, bad)
 		usage(errOut)
 		return 2
 	}
-	if root == "" {
-		fmt.Fprintln(errOut, "需要 -root 仓库目录")
-		usage(errOut)
-		return 2
-	}
-	ln, err := net.Listen("tcp", addr)
+	ln, err := net.Listen("tcp", f.addr)
 	if err != nil {
 		fmt.Fprintln(errOut, "监听失败:", err)
 		return 1
 	}
-	fmt.Fprintf(out, "仓库服务: http://%s\n", ln.Addr().String())
+	fmt.Fprintf(out, "%s: http://%s\n", label, ln.Addr().String())
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	if err := registry.Serve(ctx, registry.Options{
-		Root: root, Token: token, RateLimit: rateLimit,
-		CertFile: certFile, KeyFile: keyFile,
-	}, ln); err != nil {
+	if err := serve(ctx, f, ln); err != nil {
 		fmt.Fprintln(errOut, "服务失败:", err)
 		return 1
 	}
@@ -230,107 +214,22 @@ func cmdServeRepo(args []string, out, errOut io.Writer) int {
 	return 0
 }
 
+func cmdServeRepo(args []string, out, errOut io.Writer) int {
+	return serveCommand(args, out, errOut, "仓库服务",
+		func(ctx context.Context, f serveFlags, ln net.Listener) error {
+			return registry.Serve(ctx, registry.Options{
+				Root: f.root, Token: f.token, RateLimit: f.rateLimit,
+				CertFile: f.certFile, KeyFile: f.keyFile,
+			}, ln)
+		})
+}
+
 func cmdServe(args []string, out, errOut io.Writer) int {
-	root := ""
-	addr := "127.0.0.1:8080"
-	token := ""
-	rateLimit := 0
-	certFile := ""
-	keyFile := ""
-	bad := ""
-	for i := 0; i < len(args); i++ {
-		switch a := args[i]; {
-		case a == "-root":
-			if i+1 >= len(args) {
-				bad = "-root 缺少目录参数"
-				break
-			}
-			root = args[i+1]
-			i++
-		case a == "-addr":
-			if i+1 >= len(args) {
-				bad = "-addr 缺少地址参数"
-				break
-			}
-			addr = args[i+1]
-			i++
-		case a == "-token":
-			if i+1 >= len(args) {
-				bad = "-token 缺少值"
-				break
-			}
-			token = args[i+1]
-			i++
-		case a == "-rate-limit":
-			if i+1 >= len(args) {
-				bad = "-rate-limit 缺少数值"
-				break
-			}
-			n, err := strconv.Atoi(args[i+1])
-			if err != nil {
-				bad = "-rate-limit 必须是整数"
-			} else {
-				rateLimit = n
-			}
-			i++
-		case a == "-cert":
-			if i+1 >= len(args) {
-				bad = "-cert 缺少文件"
-				break
-			}
-			certFile = args[i+1]
-			i++
-		case a == "-key":
-			if i+1 >= len(args) {
-				bad = "-key 缺少文件"
-				break
-			}
-			keyFile = args[i+1]
-			i++
-		case a == "-rate-limit":
-			if i+1 >= len(args) {
-				bad = "-rate-limit 缺少数值"
-				break
-			}
-			n, err := strconv.Atoi(args[i+1])
-			if err != nil {
-				bad = "-rate-limit 必须是整数"
-			} else {
-				rateLimit = n
-			}
-			i++
-		default:
-			bad = "未知参数 " + a
-		}
-		if bad != "" {
-			break
-		}
-	}
-	if bad != "" {
-		fmt.Fprintln(errOut, bad)
-		usage(errOut)
-		return 2
-	}
-	if root == "" {
-		fmt.Fprintln(errOut, "需要 -root 根目录")
-		usage(errOut)
-		return 2
-	}
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		fmt.Fprintln(errOut, "监听失败:", err)
-		return 1
-	}
-	fmt.Fprintf(out, "HTTP 服务: http://%s\n", ln.Addr().String())
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	if err := server.Serve(ctx, server.Options{
-		Root: root, Token: token, RateLimit: rateLimit,
-		CertFile: certFile, KeyFile: keyFile,
-	}, ln); err != nil {
-		fmt.Fprintln(errOut, "服务失败:", err)
-		return 1
-	}
-	fmt.Fprintln(out, "已停止。")
-	return 0
+	return serveCommand(args, out, errOut, "HTTP 服务",
+		func(ctx context.Context, f serveFlags, ln net.Listener) error {
+			return server.Serve(ctx, server.Options{
+				Root: f.root, Token: f.token, RateLimit: f.rateLimit,
+				CertFile: f.certFile, KeyFile: f.keyFile,
+			}, ln)
+		})
 }
