@@ -20,6 +20,7 @@ import (
 
 	"github.com/issueye/ada_t/backend"
 	"github.com/issueye/ada_t/internal/colorval"
+	"github.com/issueye/ada_t/lobe"
 	"github.com/issueye/ada_t/widget"
 )
 
@@ -29,11 +30,35 @@ type Backend struct {
 	trees       map[string]*widget.Node
 	dispatch    backend.DispatchFunc
 	toastSource func(winID string) []string // 每帧取走待显示 toast(nil 忽略)
+	lobeOn      bool                        // 每帧应用 lobe-mygo 原生主题
+	lobeTheme   *lobe.Theme                 // nil 用 lobe.Default()
+}
+
+// Option 配置 Backend(保持 New() 无参调用不变)。
+type Option func(*Backend)
+
+// WithLobeTheme 指定 lobe-mygo 主题(默认开启 lobe 原生主题,这里换自定义配置)。
+func WithLobeTheme(t *lobe.Theme) Option {
+	return func(b *Backend) { b.lobeOn = true; b.lobeTheme = t }
+}
+
+// WithoutLobeTheme 关闭 lobe-mygo 原生主题,交回 mygo 默认主题或宿主自行 SetTheme。
+func WithoutLobeTheme() Option {
+	return func(b *Backend) { b.lobeOn = false }
 }
 
 // New 创建 mygo 后端。
-func New() *Backend {
-	return &Backend{trees: map[string]*widget.Node{}}
+//
+// 默认开启 lobe-mygo 视觉(每帧应用 Lobe UI 原生主题,明/暗跟随系统);
+// 用 mygoui.WithoutLobeTheme() 关闭,或 mygoui.WithLobeTheme(...) 换自定义主题。
+func New(opts ...Option) *Backend {
+	b := &Backend{trees: map[string]*widget.Node{}, lobeOn: true}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(b)
+		}
+	}
+	return b
 }
 
 // SetToastSource 注入 toast 来源:重放帧时按窗口取走待显示的提示文案
@@ -108,7 +133,16 @@ func (b *Backend) Run(wins []backend.WindowSpec) error {
 				b.mu.Lock()
 				tree := b.trees[id]
 				src := b.toastSource
+				lobeOn := b.lobeOn
+				lobeTheme := b.lobeTheme
 				b.mu.Unlock()
+				if lobeOn {
+					// lobe-mygo 原生主题:帧起始应用,明/暗跟随系统外观。
+					if lobeTheme == nil {
+						lobeTheme = lobe.Default()
+					}
+					lobeTheme.ApplyNative(c)
+				}
 				if tree == nil {
 					ui.Text(c, "…").Center()
 					return
@@ -596,6 +630,15 @@ func fireEvent(n *widget.Node, winID, ev string, payload any, fire backend.Dispa
 		fire(winID, hid, payload)
 	}
 }
+
+// ApplyLayout 导出布局属性应用(供外部渲染后端在 mygo 元素上复用 mygoui 的布局映射)。
+func ApplyLayout(el ui.Element, props map[string]any) ui.Element { return applyLayout(el, props) }
+
+// ParseColor 导出颜色解析(命名色 / #rrggbb / #rrggbbaa)。
+func ParseColor(s string) ui.Color { return parseColor(s) }
+
+// ParseAlign 导出对齐解析。
+func ParseAlign(s string) ui.Align { return parseAlign(s) }
 
 // —— 属性映射 ——
 

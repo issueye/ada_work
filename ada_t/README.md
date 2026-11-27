@@ -43,6 +43,7 @@
 ┌──────────────▼─────────────────────────────────────────────────────┐
 │  ④ Backend(可插拔)                                                │
 │    mygoui/  widget 树 → mygo ui 原生控件重放(GPU 绘制)             │
+│    lobe/   backend/lobe:lobe 主题 + widget→lobe-mygo 组件映射      │
 │    headless/ 树快照 + 帧日志 + 事件注入(测试 / CI / adat render)   │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -57,6 +58,35 @@
   → 微任务 flush:watch/computed 联动 → __adatHost.notify() → Go 调度渲染 pass
   → renderWindow(winID):解释 Plan,求值所有动态槽 → widget 树 JSON
   → Go 反序列化 → backend.Apply → mygo Window.Invalidate → 下一帧重放新树
+```
+
+## 0.1 lobe-mygo 视觉支持
+
+ada_t 原生渲染可接 [lobe-mygo](https://github.com/lobehub/lobe-mygo)(Lobe UI for mygo),
+让 `.aui` 应用开箱即用 Lobe UI 设计令牌(颜色/圆角/字号,明/暗跟随系统外观):
+
+- **`backend/mygoui`**:`mygoui.New()` 默认每帧应用 lobe-mygo 原生主题;
+  `mygoui.WithoutLobeTheme()` 关闭,`mygoui.WithLobeTheme(lobe.Default())` 换自定义主题。
+- **`backend/lobe`**(`package lobeui`):独立后端 `lobeui.New()`,默认 lobe 主题 +
+  **widget→lobe-mygo 组件映射**(核心子集 `Column`/`Row`/`Text`/`Button`/`PrimaryButton` → lobe `layout`/`display.Text`/`action.Button`,
+  未映射 tag 回退 mygoui 重放保留 `a-model`/事件/布局;见 `backend/lobe/render.go`);
+  `lobeui.WithTheme(...)` / `lobeui.WithoutTheme()` / `lobeui.WithoutLobeComponents()`。
+- **`ada_t/lobe`**:`lobe.Theme` 包装 lobe-mygo `theme.Config`;
+  `ApplyNative(c)` 应用 mygo `*ui.Theme`,`NativeTheme(dark)`,`Tokens(dark)`;
+  **`FlatTokens(dark)`** 产出 ada_t 扁平主题表(`dark/bg/panel/elevated/fg/muted/tertiary/accent/accentHover/border/radius`),
+  `ApplyFlat(app, dark)` 下发到 `adat.App.SetTheme`,插件用 `ctx.theme()` / `theme.*` 读。
+- **`mygoui.Renderer`**(嵌入式,`embed` 用):`SetLobeTheme(...)` 可选开启,默认关闭(宿主自管 mygo 主题)。
+
+```go
+import (
+    adat "github.com/issueye/ada_t"
+    "github.com/issueye/ada_t/backend/lobe"
+    adalobe "github.com/issueye/ada_t/lobe"
+)
+
+b := lobeui.New()                       // 目录 backend/lobe,包名 lobeui
+app, _ := adat.NewApp(pkg, adat.AppOptions{Backend: b})
+_ = adalobe.Default().ApplyFlat(app, false /* dark */) // 令牌 → ctx.theme()
 ```
 
 ## 1. 关键决策(与 ui-framework.md 的映射)

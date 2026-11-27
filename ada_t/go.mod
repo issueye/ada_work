@@ -6,6 +6,7 @@ require (
 	github.com/MoeForge/moejs v0.1.0-alpha.11
 	github.com/egoist/mygo v0.10.0
 	github.com/evanw/esbuild v0.28.2
+	github.com/lobehub/lobe-mygo v0.0.0-20261116124832-d88b4ad7f238
 )
 
 require (

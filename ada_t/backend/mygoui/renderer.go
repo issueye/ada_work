@@ -15,15 +15,18 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"github.com/issueye/ada_t/backend"
+	"github.com/issueye/ada_t/lobe"
 	"github.com/issueye/ada_t/widget"
 )
 
 // Renderer 是「渲染进现有 Context」的重放器。
 type Renderer struct {
-	mu       sync.Mutex
-	inputs   map[string]*winInput
-	dispatch backend.DispatchFunc
-	noop     backend.DispatchFunc
+	mu        sync.Mutex
+	inputs    map[string]*winInput
+	dispatch  backend.DispatchFunc
+	noop      backend.DispatchFunc
+	lobeOn    bool        // 渲染前应用 lobe-mygo 原生主题(默认关闭:宿主自管 mygo 主题)
+	lobeTheme *lobe.Theme // nil 用 lobe.Default()
 }
 
 // NewRenderer 创建渲染器。
@@ -38,6 +41,22 @@ func NewRenderer() *Renderer {
 func (r *Renderer) SetDispatch(fn backend.DispatchFunc) {
 	r.mu.Lock()
 	r.dispatch = fn
+	r.mu.Unlock()
+}
+
+// SetLobeTheme 开启 lobe-mygo 原生主题:每帧渲染前应用;
+// t 为 nil 时用 lobe.Default()。关闭见 DisableLobeTheme。
+func (r *Renderer) SetLobeTheme(t *lobe.Theme) {
+	r.mu.Lock()
+	r.lobeOn = true
+	r.lobeTheme = t
+	r.mu.Unlock()
+}
+
+// DisableLobeTheme 关闭 lobe-mygo 原生主题(默认即关闭)。
+func (r *Renderer) DisableLobeTheme() {
+	r.mu.Lock()
+	r.lobeOn = false
 	r.mu.Unlock()
 }
 
@@ -60,7 +79,15 @@ func (r *Renderer) Render(c *ui.Context, slot string, n *widget.Node) bool {
 	if dispatch == nil {
 		dispatch = r.noop
 	}
+	lobeOn := r.lobeOn
+	lobeTheme := r.lobeTheme
 	r.mu.Unlock()
+	if lobeOn {
+		if lobeTheme == nil {
+			lobeTheme = lobe.Default()
+		}
+		lobeTheme.ApplyNative(c)
+	}
 	if n == nil {
 		ui.Text(c, "…").Center()
 		return false

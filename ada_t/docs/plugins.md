@@ -178,6 +178,10 @@ return { theme, state }        // 模板里 a-bind:color="theme.fg" / a-bind:bac
 ada_chat 可把 lobe-mygo 的 token 直接映射成扁平表(`bg/panel/fg/muted/accent/radius`),
 插件就不需要自带一套配色。scoped `<style>` 仍然可用(令牌按组件隔离)。
 
+ada_t 自带该映射:`ada_t/lobe`.`Theme.FlatTokens(dark)` 产出
+`dark/bg/panel/elevated/fg/muted/tertiary/accent/accentHover/border/radius`,
+`ApplyFlat(app, dark)` 下发到 `adat.App.SetTheme`;原生渲染同源应用 lobe-mygo 主题。
+
 ## 7. 信任与安装
 
 ### 内部插件(随宿主发布)
@@ -234,7 +238,8 @@ ada_chat 是独立的 Go module,接入步骤:
 4. 把 ada_chat 现有 `ui.Context` 的绘制点改成:
    原生控件(侧栏/输入框/标题)照旧,插件贡献的位置调 `embed.Draw(c, view.ID)`;
    侧栏列表项、输入框旁动作、设置页签都可以这样插入。
-5. 主题:把 lobe-mygo 的 token 映射成扁平表,`adat.NewApp(..., Theme: tokens)`。
+5. 主题:把 lobe-mygo 的 token 映射成扁平表,`adat.NewApp(..., Theme: tokens)`;
+   或直接用 `ada_t/lobe`.`Default().ApplyFlat(app, dark)` / `FlatTokens(dark)`。
 6. 生命周期:ada_chat 关闭时 `app.Stop()`;插件变化时 `UnloadPlugin` + `LoadPluginDir` 重装
    (插件不参与主包 HMR)。
 
