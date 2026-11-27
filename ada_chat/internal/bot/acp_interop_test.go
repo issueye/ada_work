@@ -150,9 +150,7 @@ func TestACPInterop(t *testing.T) {
 	tmpPreset := interopPreset(t, preset, nil, nil)
 	restoreState := app.SetStatePath(filepath.Join(t.TempDir(), "state.json"))
 	t.Cleanup(restoreState)
-	state := &app.App{Prefs: app.Prefs{
-		AgentKind: app.AgentACP, RuntimePath: agent, AgentPreset: tmpPreset,
-	}}
+	state := &app.App{Prefs: app.Prefs{RuntimePath: agent, AgentPreset: tmpPreset}}
 	l := newLockedApp(state)
 	state.SetDispatch(l.dispatch)
 	sup, err := NewSupervisor(state)
@@ -241,9 +239,7 @@ func TestACPInteropPermission(t *testing.T) {
 	})
 	restoreState := app.SetStatePath(filepath.Join(t.TempDir(), "state.json"))
 	t.Cleanup(restoreState)
-	state := &app.App{Prefs: app.Prefs{
-		AgentKind: app.AgentACP, RuntimePath: agent, AgentPreset: tmpPreset,
-	}}
+	state := &app.App{Prefs: app.Prefs{RuntimePath: agent, AgentPreset: tmpPreset}}
 	l := newLockedApp(state)
 	state.SetDispatch(l.dispatch)
 	sup, err := NewSupervisor(state)

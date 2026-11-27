@@ -8,9 +8,7 @@ import (
 )
 
 func TestACPArgs(t *testing.T) {
-	s := &Supervisor{app: &app.App{Prefs: app.Prefs{
-		AgentKind: app.AgentACP, AgentPreset: `C:\preset.json`,
-	}}}
+	s := &Supervisor{app: &app.App{Prefs: app.Prefs{AgentPreset: `C:\preset.json`}}}
 	got := s.acpArgs()
 	if len(got) != 3 || got[0] != "acp" || got[1] != "--preset" || got[2] != `C:\preset.json` {
 		t.Fatalf("默认 ACP 参数不符: %+v", got)

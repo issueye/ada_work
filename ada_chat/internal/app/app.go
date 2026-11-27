@@ -64,11 +64,9 @@ type Prefs struct {
 	EnterToSend bool   `json:"enterToSend"`
 	// Theme 是外观:"light" / "dark";空字符串表示跟随系统。
 	Theme string `json:"theme,omitempty"`
-	// AgentKind 是运行协议:"rpc"(ada-rpc-agent,默认)或 "acp"(ada acp / 任意 ACP agent)。
-	AgentKind string `json:"agentKind,omitempty"`
-	// RuntimePath 是 runtime 可执行文件:rpc 模式为 ada-rpc-agent,acp 模式为 ada。
+	// RuntimePath 是 ACP agent 可执行文件(ada 或任意 ACP agent)路径。
 	RuntimePath string `json:"runtimePath,omitempty"`
-	// AgentPreset 是传给 runtime 的 agent preset 文件路径。
+	// AgentPreset 是传给 agent 的 ACP preset 文件路径。
 	AgentPreset string `json:"agentPreset,omitempty"`
 	// Provider 是模型供应商覆盖："openai"/"replay"；空表示跟随 preset。
 	Provider string `json:"provider,omitempty"`
@@ -81,22 +79,6 @@ type Prefs struct {
 	ActiveProvider string `json:"activeProvider,omitempty"`
 	// ThinkingTags 是思考级别标签集合;模型编辑器里可以移除或新增。
 	ThinkingTags []string `json:"thinkingTags,omitempty"`
-}
-
-// 运行协议常量。
-const (
-	AgentRPC = "rpc"
-	AgentACP = "acp"
-)
-
-// AgentKindValue 归一化运行协议;未知/空值按默认的 rpc 处理。
-func (p Prefs) AgentKindValue() string {
-	switch strings.ToLower(strings.TrimSpace(p.AgentKind)) {
-	case AgentACP:
-		return AgentACP
-	default:
-		return AgentRPC
-	}
 }
 
 // ModelSpec 是供应商下的一个模型及其运行参数。
@@ -281,7 +263,6 @@ type App struct {
 func New() *App {
 	p := Prefs{
 		EnterToSend: true,
-		AgentKind:   strings.TrimSpace(os.Getenv("ADA_BOT_AGENT_KIND")),
 		RuntimePath: strings.TrimSpace(os.Getenv("ADA_BOT_RUNTIME")),
 		AgentPreset: strings.TrimSpace(os.Getenv("ADA_GO_AGENT_PRESET")),
 		Provider:    strings.TrimSpace(os.Getenv("ADA_LLM_PROVIDER")),
@@ -294,9 +275,6 @@ func New() *App {
 		}
 	}
 	// 环境变量只填充没有保存过的项；保存过的设置优先。
-	if p.AgentKind == "" {
-		p.AgentKind = strings.TrimSpace(os.Getenv("ADA_BOT_AGENT_KIND"))
-	}
 	if p.RuntimePath == "" {
 		p.RuntimePath = strings.TrimSpace(os.Getenv("ADA_BOT_RUNTIME"))
 	}
@@ -313,7 +291,6 @@ func New() *App {
 		p.Model = strings.TrimSpace(os.Getenv("ADA_LLM_MODEL"))
 	}
 	p.EnsureProviders()
-	p.AgentKind = p.AgentKindValue()
 	a := &App{Prefs: p}
 	a.restore()
 	return a
@@ -960,7 +937,7 @@ func (a *App) SetBotInfo(id int, model, workspace string) {
 
 // NewBotSession 给机器人开一条新对话并切过去。
 //
-// 每个对话在 runtime 侧对应独立的 agent session（chat.send 带 sessionId），
+// 每条对话在 agent 侧对应独立的 session（ACP session/new），
 // 所以新对话不会带着上一轮对话的模型上下文。
 func (a *App) NewBotSession(botID int) (*Session, error) {
 	bot := a.BotByID(botID)

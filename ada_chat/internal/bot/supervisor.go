@@ -1,3 +1,5 @@
+// Package bot 管理机器人进程:一个工作目录一个 ACP agent 进程,pty 外的
+// 事件都经 ACP(stdio 上的 JSON-RPC 2.0)回到这里,再由这里写成会话消息。
 package bot
 
 import (
@@ -17,7 +19,6 @@ import (
 
 	"ada_chat/internal/acp"
 	"ada_chat/internal/app"
-	"ada_chat/internal/rpc"
 )
 
 // 一轮回答的时长策略:真正判死的是「多久没有新进展」,不是总时长。
@@ -28,25 +29,19 @@ const (
 	turnMaxTimeout  = 30 * time.Minute
 )
 
-// Supervisor owns process instances. The key is the working directory: every
-// bot that points at the same workspace shares one process and one RPC peer.
-// ada_chat owns the lifecycle so adding a second bot in the same workspace
-// never spawns a second process.
+// Supervisor 按工作目录管理进程实例:同目录的多个机器人共享一个 ACP 进程与
+// 一条连接,也不会因此启动第二个进程。
 type Supervisor struct {
 	app  *app.App
-	svc  *rpc.Service
 	args []string
 
 	mu        sync.Mutex
 	instances map[string]*instance
 	nextID    int
 	closing   atomic.Bool
-	// cancels 保存每一轮正在进行的 RPC 调用；canceled 标记由用户主动终止的轮次。
+	// cancels 保存每一轮正在进行的调用；canceled 标记由用户主动终止的轮次。
 	cancels  map[int]context.CancelFunc
 	canceled map[int]bool
-	// notify 把 runtime 的 chat/error 事件接到发起该轮调用的 goroutine，避免同一失败
-	// 又被 RPC 错误写一遍（事件帧先于响应帧到达）。
-	notify map[int]chan struct{}
 }
 
 type instance struct {
@@ -55,14 +50,11 @@ type instance struct {
 	key       string
 	workspace string
 	cmd       *exec.Cmd
-	ep        endpoint
 	log       string
-	peer      rpc.Peer
 	state     app.BotState
 	pid       int
 	err       string
 
-	// acp 非空时走 ACP 协议;此时 peer/ep 不参与。
 	acp           *acp.Client
 	acpReady      chan struct{}
 	acpErr        string
@@ -78,9 +70,6 @@ type instance struct {
 	lastActivity atomic.Int64
 	idleHit      atomic.Bool
 
-	// turns maps a chat turn/message id to the bot that asked for it, so shared
-	// process events still update the right conversation.
-	turns    map[int]int
 	bots     map[int]struct{}
 	stopping atomic.Bool
 }
@@ -97,9 +86,8 @@ func (r *instance) idleFor() time.Duration {
 	return time.Since(time.Unix(0, last))
 }
 
-// watchIdle 是「长时间没有新进展」的看门狗:超过 turnIdleTimeout 没有事件时,
-// 先让 agent 停下这一轮(ACP 用 session/cancel),再取消本地等待。
-// 总时长仍由 maxCtx(turnMaxTimeout)兜底,防止彻底跑飞。
+// watchIdle 是「长时间没有新进展」的看门狗:超过 idle 没有事件时,先让 agent
+// 停下这一轮(session/cancel),再取消本地等待。总时长仍由 maxCtx 兜底。
 func (s *Supervisor) watchIdle(r *instance, turn int, idle time.Duration, maxCtx context.Context, cancel context.CancelFunc, stop <-chan struct{}) {
 	tick := time.Second
 	if idle > 0 && idle < tick {
@@ -145,30 +133,21 @@ type acpOptionInfo struct {
 	Kind     string `json:"kind"`
 }
 
-// NewSupervisor creates an engine that starts the runtime from the host
-// settings (falling back to ADA_BOT_RUNTIME). Bot replies are not local.
+// NewSupervisor 用宿主设置构造进程管理(agent 路径缺省回落 ADA_BOT_RUNTIME)。
 func NewSupervisor(a *app.App) (*Supervisor, error) {
-	svc := rpc.NewService()
-	if err := rpc.RegisterNet(svc); err != nil {
-		return nil, err
-	}
-	if err := rpc.RegisterPipe(svc); err != nil {
-		return nil, err
-	}
 	args, err := runtimeArgs(os.Getenv("ADA_BOT_RUNTIME_ARGS"))
 	if err != nil {
 		return nil, err
 	}
 	return &Supervisor{
-		app: a, svc: svc, args: args,
+		app: a, args: args,
 		instances: map[string]*instance{},
 		cancels:   map[int]context.CancelFunc{},
 		canceled:  map[int]bool{},
-		notify:    map[int]chan struct{}{},
 	}, nil
 }
 
-// runtimeArgs parses ADA_BOT_RUNTIME_ARGS as a JSON array of strings.
+// runtimeArgs 把 ADA_BOT_RUNTIME_ARGS 解析成命令行参数数组(JSON 字符串数组)。
 func runtimeArgs(raw string) ([]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -221,7 +200,7 @@ func workspaceKey(path string) string {
 	return path
 }
 
-// Start ensures the bot's workspace has one process and adds the bot to it.
+// Start 确保机器人的工作区有一个进程,并把它加为成员。
 func (s *Supervisor) Start(b *app.Bot) error {
 	if b == nil {
 		return errors.New("机器人不存在")
@@ -231,7 +210,7 @@ func (s *Supervisor) Start(b *app.Bot) error {
 		runtimePath = strings.TrimSpace(os.Getenv("ADA_BOT_RUNTIME"))
 	}
 	if runtimePath == "" {
-		return errors.New("没有配置 Agent 路径，请在设置里选择 ada-rpc-agent 或 ada")
+		return errors.New("没有配置 Agent 路径，请在设置里选择 ada（或其他 ACP agent）")
 	}
 	if abs, err := filepath.Abs(runtimePath); err == nil {
 		runtimePath = abs
@@ -248,11 +227,10 @@ func (s *Supervisor) Start(b *app.Bot) error {
 	if r, ok := s.instances[key]; ok {
 		r.bots[b.ID] = struct{}{}
 		state, pid, errText := r.state, r.pid, r.err
-		acp := r.acp
 		workspace := r.workspace
 		s.mu.Unlock()
 		s.app.SetBotState(b.ID, state, pid, errText)
-		if acp != nil && state == app.BotRunning {
+		if state == app.BotRunning {
 			s.app.SetBotInfo(b.ID, s.app.Prefs.Model, workspace)
 		}
 		return nil
@@ -273,67 +251,21 @@ func (s *Supervisor) Start(b *app.Bot) error {
 	}
 	r := &instance{
 		id: s.nextID, workspace: b.Workspace, key: key,
-		state: app.BotStarting,
-		turns: map[int]int{}, bots: bots,
-	}
-	if s.app.Prefs.AgentKindValue() == app.AgentACP {
-		r.acpSessions = map[int]string{}
-		r.acpBindings = map[string]acpBinding{}
-		r.acpTurns = map[int]string{}
-		r.acpApprovals = map[string]chan bool{}
-		r.acpReady = make(chan struct{})
+		state: app.BotStarting, bots: bots,
+		acpReady:     make(chan struct{}),
+		acpSessions:  map[int]string{},
+		acpBindings:  map[string]acpBinding{},
+		acpTurns:     map[int]string{},
+		acpApprovals: map[string]chan bool{},
 	}
 	s.instances[key] = r
 	s.mu.Unlock()
 
 	s.setState(r, app.BotStarting, 0, "")
-	if s.app.Prefs.AgentKindValue() == app.AgentACP {
-		return s.startACP(r, b, runtimePath)
-	}
-	ep, err := newEndpoint(r.id)
-	if err != nil {
-		s.setState(r, app.BotError, 0, err.Error())
-		s.drop(r)
-		return err
-	}
-	r.ep = ep
-	cmd, logPath, err := s.spawn(b, ep, runtimePath)
-	if err != nil {
-		s.setState(r, app.BotError, 0, err.Error())
-		s.drop(r)
-		ep.cleanup()
-		return err
-	}
-	r.cmd, r.log = cmd, logPath
-	go s.connect(r)
-	go s.wait(r)
-	return nil
+	return s.startACP(r, b, runtimePath)
 }
 
-func (s *Supervisor) spawn(b *app.Bot, ep endpoint, runtimePath string) (*exec.Cmd, string, error) {
-	f, err := os.CreateTemp("", fmt.Sprintf("ada-bot-%d-*.log", ep.id))
-	if err != nil {
-		return nil, "", fmt.Errorf("创建机器人日志失败: %w", err)
-	}
-	cmd := exec.Command(runtimePath, s.args...)
-	cmd.Dir = b.Workspace
-	env := s.baseEnv(b)
-	env = setEnv(env, EnvAddr, ep.addr.String())
-	env = setEnv(env, EnvToken, string(ep.token))
-	cmd.Env = env
-	cmd.Stdout = f
-	cmd.Stderr = f
-	hideWindow(cmd)
-	if err := cmd.Start(); err != nil {
-		_ = f.Close()
-		_ = os.Remove(f.Name())
-		return nil, "", fmt.Errorf("启动机器人进程失败: %w", err)
-	}
-	_ = f.Close()
-	return cmd, f.Name(), nil
-}
-
-// baseEnv 是两种 runtime 共享的环境:机器人身份 + 供应商 + 机器人自定义变量。
+// baseEnv 是 agent 进程的环境:机器人身份 + 供应商 + 机器人自定义变量。
 func (s *Supervisor) baseEnv(b *app.Bot) []string {
 	env := append(os.Environ(),
 		EnvName+"="+b.Name,
@@ -377,7 +309,7 @@ func (s *Supervisor) acpArgs() []string {
 func (s *Supervisor) startACP(r *instance, b *app.Bot, runtimePath string) error {
 	args := s.acpArgs()
 	if len(args) == 0 {
-		err := errors.New("ACP 模式需要 Agent preset 或 ADA_BOT_RUNTIME_ARGS")
+		err := errors.New("需要 Agent preset 或 ADA_BOT_RUNTIME_ARGS")
 		s.setState(r, app.BotError, 0, err.Error())
 		s.drop(r)
 		return err
@@ -736,7 +668,7 @@ func acpRawString(raw json.RawMessage) string {
 }
 
 // applyBotEnv 把机器人自己的环境变量写进子进程,跳过宿主保留的变量:
-// ADA_BOT_ADDR/TOKEN/NAME/MODEL/INSTRUCTION/WORKSPACE 与 preset 由宿主决定,不能被覆盖。
+// ADA_BOT_NAME/MODEL/INSTRUCTION/WORKSPACE 与 preset 由宿主决定,不能被覆盖。
 func applyBotEnv(env []string, extra map[string]string) []string {
 	for name, value := range extra {
 		if reservedBotEnv[name] {
@@ -749,7 +681,7 @@ func applyBotEnv(env []string, extra map[string]string) []string {
 
 // reservedBotEnv 是宿主自己写入、机器人不能覆盖的变量。
 var reservedBotEnv = map[string]bool{
-	EnvAddr: true, EnvToken: true, EnvName: true, EnvModel: true,
+	EnvName: true, EnvModel: true,
 	EnvInstruction: true, EnvWorkspace: true, "ADA_GO_AGENT_PRESET": true,
 }
 
@@ -763,184 +695,6 @@ func setEnv(env []string, key, value string) []string {
 		out = append(out, kv)
 	}
 	return append(out, prefix+value)
-}
-
-// connect retries the dial until the child's listener is up, then subscribes
-// and starts pumping events.
-func (s *Supervisor) connect(r *instance) {
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if s.closing.Load() || r.stopping.Load() {
-			return
-		}
-		dctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		p, err := s.svc.Dial(dctx, r.ep.addr, rpc.DialOptions{
-			Client:  ClientName,
-			Auth:    rpc.Auth{Mode: rpc.AuthToken, Token: r.ep.token},
-			Timeout: 2 * time.Second,
-		})
-		cancel()
-		if err == nil {
-			sctx, scancel := context.WithTimeout(context.Background(), 2*time.Second)
-			err = p.Subscribe(sctx, "chat/*")
-			scancel()
-			if err == nil {
-				s.mu.Lock()
-				if s.closing.Load() || r.stopping.Load() || s.instances[r.key] != r {
-					s.mu.Unlock()
-					_ = p.Close()
-					return
-				}
-				r.peer = p
-				s.mu.Unlock()
-				s.setState(r, app.BotRunning, r.cmd.Process.Pid, "")
-				s.refreshInfo(r, p)
-				go s.events(r, p)
-				return
-			}
-			_ = p.Close()
-		}
-		if time.Now().After(deadline) {
-			s.failed(r, "机器人进程没有连上: "+errText(err))
-			return
-		}
-		select {
-		case <-time.After(25 * time.Millisecond):
-		case <-time.After(time.Until(deadline)):
-		}
-	}
-}
-
-// refreshInfo reads bot.info and copies the actual model/workspace to every
-// bot that shares this process.
-func (s *Supervisor) refreshInfo(r *instance, p rpc.Peer) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	var info struct {
-		Model     string `json:"model"`
-		Workspace string `json:"workspace"`
-	}
-	if err := p.Call(ctx, "bot.info", nil, &info); err != nil {
-		return
-	}
-	s.mu.Lock()
-	members := s.members(r)
-	s.mu.Unlock()
-	for _, id := range members {
-		s.app.SetBotInfo(id, info.Model, info.Workspace)
-	}
-}
-
-func (s *Supervisor) events(r *instance, p rpc.Peer) {
-	for ev := range p.Events() {
-		r.touch()
-		switch ev.Topic {
-		case "chat/delta":
-			var d struct {
-				Turn int    `json:"turn"`
-				Text string `json:"text"`
-			}
-			if json.Unmarshal(ev.Data, &d) == nil && d.Turn > 0 {
-				if id := s.turnOwner(r, d.Turn); id > 0 {
-					s.app.BotDelta(id, d.Turn, d.Text)
-				}
-			}
-		case "chat/reasoning":
-			var d struct {
-				Turn int    `json:"turn"`
-				Text string `json:"text"`
-			}
-			if json.Unmarshal(ev.Data, &d) == nil && d.Turn > 0 && d.Text != "" {
-				if id := s.turnOwner(r, d.Turn); id > 0 {
-					s.app.BotReasoning(id, d.Turn, d.Text)
-				}
-			}
-		case "chat/tool":
-			var d struct {
-				Turn       int    `json:"turn"`
-				ID         string `json:"id"`
-				Name       string `json:"name"`
-				Args       string `json:"args"`
-				Status     string `json:"status"`
-				Text       string `json:"text"`
-				DurationMS int64  `json:"durationMs"`
-			}
-			if json.Unmarshal(ev.Data, &d) == nil && d.Turn > 0 && d.ID != "" {
-				if id := s.turnOwner(r, d.Turn); id > 0 {
-					s.app.BotTool(id, d.Turn, app.ToolEvent{
-						ID: d.ID, Name: d.Name, Args: d.Args, Status: d.Status, Text: d.Text,
-						Duration: time.Duration(d.DurationMS) * time.Millisecond,
-					})
-				}
-			}
-		case "chat/plan":
-			var d struct {
-				Turn  int    `json:"turn"`
-				Title string `json:"title"`
-				Steps []struct {
-					Content  string `json:"content"`
-					Status   string `json:"status"`
-					Priority string `json:"priority"`
-				} `json:"steps"`
-			}
-			if json.Unmarshal(ev.Data, &d) == nil && d.Turn > 0 {
-				if id := s.turnOwner(r, d.Turn); id > 0 {
-					steps := make([]app.TodoStep, 0, len(d.Steps))
-					for _, step := range d.Steps {
-						steps = append(steps, app.TodoStep{
-							Content: step.Content, Status: step.Status, Priority: step.Priority,
-						})
-					}
-					s.app.BotTodo(id, d.Turn, app.Todo{Title: d.Title, Steps: steps})
-				}
-			}
-		case "chat/done":
-			var d struct {
-				Turn int `json:"turn"`
-			}
-			if json.Unmarshal(ev.Data, &d) == nil && d.Turn > 0 {
-				if id := s.turnOwner(r, d.Turn); id > 0 {
-					s.app.BotTurnDone(id, d.Turn, "")
-				}
-			}
-		case "chat/approval":
-			var d struct {
-				Turn      int    `json:"turn"`
-				ID        string `json:"id"`
-				Source    string `json:"source"`
-				Op        string `json:"op"`
-				Target    string `json:"target"`
-				Reason    string `json:"reason"`
-				TimeoutMS int64  `json:"timeoutMs"`
-			}
-			if json.Unmarshal(ev.Data, &d) == nil && d.Turn > 0 && d.ID != "" {
-				if id := s.turnOwner(r, d.Turn); id > 0 {
-					s.app.BotApproval(id, d.Turn, app.Approval{
-						ID: d.ID, Source: d.Source, Op: d.Op, Target: d.Target, Reason: d.Reason,
-						Timeout: time.Duration(d.TimeoutMS) * time.Millisecond,
-					})
-				}
-			}
-		case "chat/error":
-			var d struct {
-				Turn   int    `json:"turn"`
-				Reason string `json:"reason"`
-			}
-			if json.Unmarshal(ev.Data, &d) == nil && d.Turn > 0 {
-				if id := s.turnOwner(r, d.Turn); id > 0 {
-					if d.Reason == "" {
-						d.Reason = "agent 运行失败"
-					}
-					s.app.BotTurnFailed(id, d.Turn, d.Reason)
-					s.signalNotified(d.Turn)
-				}
-			}
-		}
-	}
-	if r.stopping.Load() || s.closing.Load() || !s.current(r) {
-		return
-	}
-	s.lost(r, "机器人连接已断开")
 }
 
 // wait reaps the child and records an unexpected exit.
@@ -960,16 +714,12 @@ func (s *Supervisor) lost(r *instance, reason string) {
 	already := r.stopping.Swap(true)
 	if !already {
 		s.removeInstance(r)
-		if p := r.peer; p != nil {
-			_ = p.Close()
-		}
 		if r.acp != nil {
 			_ = r.acp.Close()
 		}
 		if r.cmd != nil && r.cmd.Process != nil {
 			_ = r.cmd.Process.Kill()
 		}
-		r.ep.cleanup()
 	}
 	s.setState(r, app.BotError, 0, strings.TrimSpace(reason))
 }
@@ -978,22 +728,18 @@ func (s *Supervisor) failed(r *instance, reason string) {
 	already := r.stopping.Swap(true)
 	if !already {
 		s.removeInstance(r)
-		if p := r.peer; p != nil {
-			_ = p.Close()
-		}
 		if r.acp != nil {
 			_ = r.acp.Close()
 		}
 		if r.cmd != nil && r.cmd.Process != nil {
 			_ = r.cmd.Process.Kill()
 		}
-		r.ep.cleanup()
 	}
 	s.setState(r, app.BotError, 0, strings.TrimSpace(reason))
 }
 
-// Send asks the workspace's process to answer one turn; events stream back to
-// the bot that owns the turn. sessionID 标识宿主侧的对话，runtime 按它隔离 agent session。
+// Send 让工作区进程回答一轮;流式更新经 session/update 回到发起这一轮的会话。
+// sessionID 标识宿主侧的对话,runtime 按它隔离 agent session。
 func (s *Supervisor) Send(b *app.Bot, turn int, text string, sessionID int) error {
 	key := app.InstanceKey(b)
 	s.mu.Lock()
@@ -1012,82 +758,7 @@ func (s *Supervisor) Send(b *app.Bot, turn int, text string, sessionID int) erro
 	if r == nil {
 		return errors.New("这个工作区的机器人进程还没有运行")
 	}
-	if r.acp != nil {
-		return s.sendACP(r, b, turn, text, sessionID)
-	}
-	s.mu.Lock()
-	r.turns[turn] = b.ID
-	s.notify[turn] = make(chan struct{}, 1)
-	s.mu.Unlock()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	maxCtx, maxCancel := context.WithTimeout(ctx, turnMaxTimeout)
-	s.mu.Lock()
-	s.cancels[turn] = cancel
-	s.mu.Unlock()
-	r.idleHit.Store(false)
-	r.touch()
-	stopWatch := make(chan struct{})
-
-	go func() {
-		defer func() {
-			close(stopWatch)
-			maxCancel()
-			cancel()
-			s.mu.Lock()
-			delete(s.cancels, turn)
-			delete(s.canceled, turn)
-			delete(s.notify, turn)
-			s.mu.Unlock()
-		}()
-		go s.watchIdle(r, turn, turnIdleTimeout, maxCtx, cancel, stopWatch)
-		p, reason := s.waitPeer(r, 10*time.Second)
-		if p == nil {
-			s.forgetTurn(r, turn)
-			if s.takeCanceled(turn) {
-				s.app.BotTurnDone(b.ID, turn, "")
-				return
-			}
-			s.app.BotTurnFailed(b.ID, turn, reason)
-			return
-		}
-		var res struct {
-			Turn int    `json:"turn"`
-			Text string `json:"text"`
-		}
-		params := map[string]any{
-			"turn": turn, "text": text,
-			"botId": b.ID, "botName": b.Name, "instruction": b.Instruction,
-			"sessionId": strconv.Itoa(sessionID),
-		}
-		err := p.Call(maxCtx, "chat.send", params, &res)
-		manual := s.takeCanceled(turn)
-		s.forgetTurn(r, turn)
-		if manual {
-			s.app.BotTurnDone(b.ID, turn, "")
-			return
-		}
-		if err != nil {
-			// 长时间没有新进展:这不是 runtime 的错误事件,自己写一条可读原因。
-			if r.idleHit.Load() {
-				s.app.BotTurnFailed(b.ID, turn, "长时间没有新进展("+turnIdleTimeout.String()+"),已中止这一轮")
-				return
-			}
-			// runtime 在返回错误前会发 chat/error，事件已把可读原因写进对话；
-			// 只有没等到事件（进程断开等）才回落到 RPC 错误 + 机器人日志末行。
-			if s.wasNotified(turn) {
-				return
-			}
-			reason := errText(err)
-			if tail := logTail(r.log); tail != "" {
-				reason += "；" + tail
-			}
-			s.app.BotTurnFailed(b.ID, turn, reason)
-			return
-		}
-		s.app.BotTurnDone(b.ID, turn, res.Text)
-	}()
-	return nil
+	return s.sendACP(r, b, turn, text, sessionID)
 }
 
 // sendACP 在 ACP 连接上跑一轮:创建/复用 agent session,转发流式更新,最后结束消息。
@@ -1162,9 +833,8 @@ func (s *Supervisor) sendACP(r *instance, b *app.Bot, turn int, text string, ses
 	return nil
 }
 
-// Cancel 终止某轮正在进行的调用；RPC 模式取消 context，ACP 模式先发
-// session/cancel 通知再取消 context。取消标记让 Send 把这次失败当作“用户停止”，
-// 而不是写一条错误到对话里。
+// Cancel 终止某轮正在进行的调用:先发 session/cancel 通知,再取消本地等待。
+// 取消标记让 Send 把这次失败当作“用户停止”,而不是写一条错误到对话里。
 func (s *Supervisor) Cancel(botID, turn int) error {
 	_ = botID
 	s.mu.Lock()
@@ -1175,10 +845,7 @@ func (s *Supervisor) Cancel(botID, turn int) error {
 	var client *acp.Client
 	var session string
 	for _, r := range s.instances {
-		if r.acp == nil {
-			continue
-		}
-		if sid := r.acpTurns[turn]; sid != "" {
+		if sid := r.acpTurns[turn]; sid != "" && r.acp != nil {
 			client, session = r.acp, sid
 			break
 		}
@@ -1204,43 +871,14 @@ func (s *Supervisor) takeCanceled(turn int) bool {
 	return v
 }
 
-// signalNotified 把 chat/error 已经处理过的轮次告诉 Send；事件帧先于响应帧到达。
-func (s *Supervisor) signalNotified(turn int) {
-	s.mu.Lock()
-	ch := s.notify[turn]
-	s.mu.Unlock()
-	if ch == nil {
-		return
-	}
-	select {
-	case ch <- struct{}{}:
-	default:
-	}
-}
-
-// wasNotified 等一小会儿确认本轮是否已由 chat/error 写过失败原因。
-func (s *Supervisor) wasNotified(turn int) bool {
-	s.mu.Lock()
-	ch := s.notify[turn]
-	s.mu.Unlock()
-	if ch == nil {
-		return false
-	}
-	select {
-	case <-ch:
-		return true
-	case <-time.After(250 * time.Millisecond):
-		return false
-	}
-}
-
-// Approve 回答机器人进程的一次升级审批；请求只能经它所属的工作区进程送达。
+// Approve 回答一次 ACP 权限请求;请求只能经发起它的工作区实例送达。
 func (s *Supervisor) Approve(botID int, id string, allow bool, reason string) error {
+	_ = reason // ACP 的 outcome 只带 optionId,没有自由文本理由
+	if s.app.BotByID(botID) == nil {
+		return errors.New("机器人不存在")
+	}
 	s.mu.Lock()
 	for _, r := range s.instances {
-		if r.acp == nil {
-			continue
-		}
 		if _, ok := r.bots[botID]; !ok {
 			continue
 		}
@@ -1256,51 +894,8 @@ func (s *Supervisor) Approve(botID int, id string, allow bool, reason string) er
 		return nil
 	}
 	s.mu.Unlock()
-
-	bot := s.app.BotByID(botID)
-	if bot == nil {
-		return errors.New("机器人不存在")
-	}
-	key := app.InstanceKey(bot)
-	s.mu.Lock()
-	r := s.instances[key]
-	s.mu.Unlock()
-	if r == nil {
-		return errors.New("这个工作区的机器人进程还没有运行")
-	}
-	p, why := s.waitPeer(r, 2*time.Second)
-	if p == nil {
-		return errors.New(why)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := p.Call(ctx, "chat.approve", map[string]any{
-		"id": id, "allow": allow, "reason": reason,
-	}, nil); err != nil {
-		return fmt.Errorf("提交审批结果失败: %w", err)
-	}
+	// 找不到等待中的请求:多半已超时或该轮已结束,与 DecideApproval 的宽容语义一致。
 	return nil
-}
-
-func (s *Supervisor) waitPeer(r *instance, timeout time.Duration) (rpc.Peer, string) {
-	deadline := time.Now().Add(timeout)
-	for {
-		s.mu.Lock()
-		p := r.peer
-		stopped := r.stopping.Load()
-		exists := s.instances[r.key] == r
-		s.mu.Unlock()
-		if p != nil {
-			return p, ""
-		}
-		if stopped || !exists {
-			return nil, "机器人进程没有连上"
-		}
-		if time.Now().After(deadline) {
-			return nil, "机器人启动超时"
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
 }
 
 // Stop detaches one bot. The shared process is killed only when its last bot
@@ -1328,16 +923,12 @@ func (s *Supervisor) Stop(id int) error {
 	if !last {
 		return nil
 	}
-	if r.peer != nil {
-		_ = r.peer.Close()
-	}
 	if r.acp != nil {
 		_ = r.acp.Close()
 	}
 	if r.cmd != nil && r.cmd.Process != nil {
 		_ = r.cmd.Process.Kill()
 	}
-	r.ep.cleanup()
 	return nil
 }
 
@@ -1353,16 +944,12 @@ func (s *Supervisor) Close() error {
 	}
 	s.mu.Unlock()
 	for _, r := range runs {
-		if r.peer != nil {
-			_ = r.peer.Close()
-		}
 		if r.acp != nil {
 			_ = r.acp.Close()
 		}
 		if r.cmd != nil && r.cmd.Process != nil {
 			_ = r.cmd.Process.Kill()
 		}
-		r.ep.cleanup()
 	}
 	return nil
 }
@@ -1383,18 +970,6 @@ func (s *Supervisor) members(r *instance) []int {
 		out = append(out, id)
 	}
 	return out
-}
-
-func (s *Supervisor) turnOwner(r *instance, turn int) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return r.turns[turn]
-}
-
-func (s *Supervisor) forgetTurn(r *instance, turn int) {
-	s.mu.Lock()
-	delete(r.turns, turn)
-	s.mu.Unlock()
 }
 
 func (s *Supervisor) current(r *instance) bool {

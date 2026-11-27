@@ -1,15 +1,19 @@
 # ada_chat × ada_go_v2：两条产品方向与职责分析
 
-> 本文基于当前代码状态：ada_chat 已改成「工作区进程 + RPC 客户端」，删除了预置对话、固定回答、测试和快照；
-> ada_go_v2 增加了 `cmd/ada-rpc-agent`，把 agent preset 做成可被桌面宿主启动的 RPC 进程。
+> 本文基于当前代码状态：ada_chat 是「工作区进程 + ACP 客户端」，删除了预置对话、固定回答、测试和快照；
+> ada_go_v2 的 `ada acp` 把 agent preset 做成可被桌面宿主启动的 ACP agent（stdio 上的 JSON-RPC 2.0）。
+>
+> **历史说明**：早期 ada_chat 曾实现 seam RPC v1 客户端并与 `cmd/ada-rpc-agent` 通讯；该 RPC 路径
+> 已整体移除（`internal/rpc`、私有 pipe/token 端点、`chat.send`/`chat.approve` 事件面），只保留 ACP。
+> 下文提到 RPC 的地方都是历史基线或 ada_go_v2 侧仍保留的能力，不代表 ada_chat 现状。
 
 ## 0. 结论摘要
 
 | 问题 | 结论 |
 |---|---|
-| 谁管理进程 | **ada_chat**。它按**工作目录**（工作区）管理进程实例，相同目录只保留一个进程和一个 RPC peer。 |
+| 谁管理进程 | **ada_chat**。它按**工作目录**（工作区）管理进程实例，相同目录只保留一个进程和一条 ACP 连接。 |
 | 谁运行 agent | **ada_go_v2**。kernel、agent loop、tools、LLM、session、workspace/policy 都在它这一侧。 |
-| 两者边界 | ada_chat 负责「人、工作区、进程、对话、持久化、操作系统集成」；ada_go_v2 负责「agent 执行、模型、工具、会话、权限与编排」。RPC 是契约，ada_chat 是客户端，ada_go_v2 是服务端。 |
+| 两者边界 | ada_chat 负责「人、工作区、进程、对话、持久化、操作系统集成」；ada_go_v2 负责「agent 执行、模型、工具、会话、权限与编排」。ACP 是契约，ada_chat 是客户端，ada_go_v2 是服务端。 |
 | 个人助手方向 | 现有原型可跑；最先缺的是 runtime 配置 UI、持久化、进程面板、工具/审批事件回传。 |
 | 项目群组方向 | 进程/工作区底座已经有了，但缺少「项目」实体、群聊/任务路由、多 agent 运行时与权限模型。 |
 
@@ -21,50 +25,45 @@
 
 - 原生桌面窗口：侧栏、机器人、对话、输入框、设置（MyGo + Lobe）。
 - **工作区进程管理**：`internal/bot.Supervisor` 以规范化后的工作目录为 key（绝对路径 + 解析符号链接 +
-  Windows 小写）；同一个目录（包括带尾斜杠/大小写不同的写法）的多个机器人共享一个进程、一个 RPC peer。
+  Windows 小写）；同一个目录（包括带尾斜杠/大小写不同的写法）的多个机器人共享一个进程、一条 ACP 连接。
 - 进程生命周期：添加机器人或点击机器人时确保该工作区进程运行；最后一个机器人离开时停止进程；
   应用关闭时统一停止所有实例。
-- 每轮消息的路由：`chat.send` 记录 `turn → botID`，共享进程返回的 `chat/delta` 仍更新正确机器人的会话。
-- 状态回写：进程状态（启动中/运行中/失败）、pid、`bot.info` 报告的真实模型和工作目录会广播给共享该进程的所有机器人。
+- 每轮消息的路由：每个 `sessionId` 绑定 `botID/turn`，共享进程返回的 `session/update` 仍更新正确机器人的会话。
+- 状态回写：进程状态（启动中/运行中/失败）、pid 与会话工作目录会广播给共享该进程的所有机器人。
 - 外部运行时：设置页选择 `Agent 路径`/`Agent preset`/模型供应商（文件选择器、Endpoint/模型/API Key），
   保存到本机 `config.json`；留空项回落到 `ADA_BOT_RUNTIME` / `ADA_GO_AGENT_PRESET` /
   `ADA_LLM_PROVIDER` / `ADA_LLM_ENDPOINT` / `ADA_LLM_MODEL`。不再内置固定回答的测试机器人。
-- 供应商：设置页可在「跟随 preset / OpenAI 兼容 / Replay」之间切换；runtime 在装配 preset 时
+- 供应商：设置页可在「跟随 preset / OpenAI 兼容 / Replay」之间切换；agent 在装配 preset 时
   启用对应 provider、禁用另一个，并改写 `agent-loop.model`。供应商设置是**进程级**的，新进程生效。
 - 空工作台：没有预置对话；添加机器人后自动打开它的第一条对话。
 
 ### 1.2 ada_go_v2 现在负责什么
 
 - kernel/plugin/preset 装配，agent loop、tools、LLM provider、session、prompts、workspace、fs/shell、approval、caps 等业务插件。
-- `cmd/ada-rpc-agent` 宿主适配器：
-  - 按宿主给的 preset 装配 agent，把 `fs-local` 的 `/workspace` 根改成选中的工作目录；
-  - 把机器人名称/系统提示词写入 `system-prompt`；
-  - 在同一进程内挂载 seam/rpc + rpc-net + rpc-pipe + rpc-json；
-  - 暴露 `bot.info` 与 `chat.send`，后者先流式 `chat/delta`，再 `chat/done`；
-  - 每个 botId 一个 agent session（同进程共享 agent 配置、模型与 prompt）。
-- 参考实现：RPC 的 pipe 传输、token 握手、事件、授权/观察/TLS 等都由 ada_go_v2 这一侧维护。
+- `ada acp` 宿主适配器（`platform/host/acp` + `platform/host/cli`）：
+  - 按宿主给的 preset 装配 agent，把工作区根绑到 agent 进程的 cwd；
+  - 在 stdin/stdout 上说 ACP：`initialize` / `session/new|load|prompt|cancel` / `session/update` /
+    `session/request_permission`；
+  - 每个 ada_chat 对话一个 agent session（同进程共享 agent 配置、模型与 preset）。
+- `cmd/ada-rpc-agent` 与 seam RPC 栈仍留在 ada_go_v2（供其它客户端/测试使用），但**不再是 ada_chat 的运行时**。
 
 ### 1.3 已实际验证
 
-- 两个机器人指向同一个临时工作目录：只启动 **1 个** `ada-rpc-agent` 进程，`InstanceInfo.Bots == 2`。
-- 第一个机器人经 RPC 得到真实 replay agent 的回答 `文件内容是 hello`。
+- 两个机器人指向同一个临时工作目录：只启动 **1 个** ACP agent 进程，`InstanceInfo.Bots == 2`。
+- ACP 互操作（`TestACPInterop`）：真实 `ada acp` 进程 → 文本/工具/计划更新落到会话。
 - 移除第一个机器人后进程仍在（`Bots == 1`）；移除最后一个后实例为 0。
 - 设置页保存的 `Agent 路径`/`Agent preset` 写入配置文件；重启后自动加载，新进程使用保存的路径启动
   （实测在无 `ADA_BOT_RUNTIME` 环境下仍能启动并返回真实回答）。
-- 设置 OpenAI 兼容供应商后，runtime 启用 `llm-openai`、禁用 `llm-replay`；经 mock OpenAI SSE
-  端点实测，请求带保存的 Bearer key，回复来自该供应商，模型回写为所选模型。
-- 同一进程里的第二个机器人通过 `chat.send` 的 `botName`/`instruction` 拿到自己的身份：mock OpenAI
-  端点捕获到的系统提示里，第二个机器人不再看到第一个机器人的名字与指令（`TestInteropPerBotPersona`）。
-- 桌面桥挂载了 `rpc-guard`/`rpc-observe`：监听地址、客户端名与 `bot.info`/`chat.send`/`chat.approve`
-  三个方法在启动时由环境拼成白名单，客户端仍能正常握手与调用。
-- 审批往返已跑通（`TestInteropApproval`）：preset 启用 `seam-approval` + `approval-gate` 时，
-  runtime 发 `chat/approval`，宿主回 `chat.approve`，工具继续执行；超时/拒绝按 fail-closed。
-- 发布包风格 preset（`data/…` 相对包根 + `.ada-base` 锚点）可以经 `ada-rpc-agent` 装配成功。
+- 设置 OpenAI 兼容供应商后，agent 启用 `llm-openai`、禁用 `llm-replay`；经 mock OpenAI SSE
+  端点实测，请求带保存的 Bearer key，回复来自该供应商。
+- 审批往返已跑通（`TestACPInteropPermission`）：preset 叠加 `approval-gate` 后，agent 发
+  `session/request_permission`，宿主允许一次，工具继续执行；超时/拒绝按 fail-closed。
+- 发布包风格 preset（`data/…` 相对包根 + `.ada-base` 锚点）可以经 `ada acp` 装配成功。
 - 机器人、对话与消息持久化到 `%AppData%\ada_chat\state.json`：添加/编辑、发送、轮次结束、
   改名/删除与关窗都会落盘；重启后侧栏机器人与历史消息恢复，进程按「未启动」恢复，
   正在生成的消息标记为未完成、运行中的工具记为中断（`internal/app/state_test.go`）。
-- 自动化测试：补回跨仓库端到端互操作测试（`internal/rpc/interop_test.go`）与审批队列单测
-  （`internal/app/approval_test.go`）；互操作测试默认跳过，配置 `ADA_INTEROP_*` 才拉起真实 runtime。
+- 自动化测试：ACP 端到端互操作（`internal/bot/acp_interop_test.go`）与审批队列单测
+  （`internal/app/approval_test.go`）；互操作测试默认跳过，配置 `ADA_ACP_INTEROP_*` 才拉起真实 agent。
 
 ### 1.4 当前原型暴露的边界
 
@@ -74,10 +73,10 @@
   但「同工作区多机器人」在 ada_go_v2 侧仍缺 per-agent provider 隔离。
 - 进程只有「启动/停止」两个隐式动作，没有 UI 面板、健康检查、重启策略、日志入口。
 - 审批只在 preset 装了 `seam-approval` 时可用；发布预设默认不装，因此默认仍是 fail-closed。
-- 偏好（名称、Enter、运行时/preset 路径、供应商设置）写进 `config.json`；机器人、对话与消息写进
+- 偏好（名称、Enter、agent 路径/preset、供应商设置）写进 `config.json`；机器人、对话与消息写进
   `state.json`，重启后恢复。进程状态、审批进行中、窗口尺寸仍不落盘。API Key 目前明文存在
   `config.json`（0600），后续需要 keychain/DPAPI。
-- 一个机器人可以有多条对话：右键「新建会话」会带新的 `sessionId`，runtime 为每条对话建独立 agent
+- 一个机器人可以有多条对话：右键「新建会话」会带新的 `sessionId`，agent 为每条对话建独立
   session，新对话不继承旧对话的模型上下文；进程/preset/模型仍按工作区共享。
 
 ---
@@ -98,10 +97,10 @@
 | 工作区进程管理 | 已有（同目录共享） | 进程面板：状态、pid、日志、启动/停止/重启；健康检查与退避重启 |
 | 对话体验 | 有基本对话、流式回写与本地持久化 | 搜索、导出；附件/文件引用；消息重试与取消的 UI |
 | Runtime / 供应商配置 | 设置页已有 Agent 路径、preset、供应商/Endpoint/模型/API Key（持久化） | 再加运行时诊断、密钥安全存储（keychain）、per-agent 供应商覆盖 |
-| 审批/工具 | 工具卡片 + 审批弹窗已接入（`chat/approval` → `chat.approve`，超时 fail-closed） | 把审批按项目/角色配置；审批历史与审计视图 |
+| 审批/工具 | 工具卡片 + 审批弹窗已接入（`session/request_permission`，超时 fail-closed） | 把审批按项目/角色配置；审批历史与审计视图 |
 | 身份与密钥 | 无 | 用户显示名；模型密钥进 OS keychain/秘密存储，不写日志 |
 | 系统集成 | 有窗口 | 单实例锁、托盘/开机启动、通知、关闭窗口时的进程策略 |
-| 安全边界 | 本地 token + pipe ACL | 进程权限、可执行文件签名/来源、工作目录授权提示 |
+| 安全边界 | ACP stdio + 子进程 | 进程权限、可执行文件签名/来源、工作目录授权提示 |
 
 ### 2.3 ada_go_v2 的角色
 
@@ -109,7 +108,7 @@
 |---|---|---|
 | agent 执行 | `agent-loop` 已可用 | 面向宿主的稳定生命周期 API（初始化/健康/关闭） |
 | 模型与会话 | LLM provider + session | per-session/per-agent 模型与 prompt 配置；会话持久化（JSONL/内存可选） |
-| 工具与文件 | tools、fs、shell、workspace 已有 | 工具/审批事件通过 RPC 暴露；大对象走句柄而不是 JSON |
+| 工具与文件 | tools、fs、shell、workspace 已有 | 工具/审批事件通过 ACP 暴露；大对象走句柄而不是 JSON |
 | 工作区 | workspace-local、fs-local；动态根由宿主 patch | 正式 `workspace.configure`/`workspace.info` 方法，不用装配期改 manifest |
 | 安全 | caps/guard/approval、TLS、RPC guard 已有 | 与桌面宿主的信任边界：签名、密钥来源、审计出口 |
 | 进程模型 | 每个工作区一个宿主进程（原型） | 进程内多 session；进程级健康/关闭；标准输入输出/日志约定 |
