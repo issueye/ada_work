@@ -22,8 +22,6 @@ import (
 	fsredact "github.com/issueye/ada_go_v2/plugins/policy/fs-redact"
 	fssandbox "github.com/issueye/ada_go_v2/plugins/policy/fs-sandbox"
 	llmretry "github.com/issueye/ada_go_v2/plugins/policy/llm-retry"
-	rpcguard "github.com/issueye/ada_go_v2/plugins/policy/rpc-guard"
-	rpcobserve "github.com/issueye/ada_go_v2/plugins/policy/rpc-observe"
 	secretsguard "github.com/issueye/ada_go_v2/plugins/policy/secrets-guard"
 	shellguard "github.com/issueye/ada_go_v2/plugins/policy/shell-guard"
 	shellobserve "github.com/issueye/ada_go_v2/plugins/policy/shell-observe"
@@ -36,10 +34,6 @@ import (
 	fslocal "github.com/issueye/ada_go_v2/plugins/provider/fs-local"
 	openai "github.com/issueye/ada_go_v2/plugins/provider/llm-openai"
 	replay "github.com/issueye/ada_go_v2/plugins/provider/llm-replay"
-	rpcjson "github.com/issueye/ada_go_v2/plugins/provider/rpc-json"
-	rpcnet "github.com/issueye/ada_go_v2/plugins/provider/rpc-net"
-	rpcpipe "github.com/issueye/ada_go_v2/plugins/provider/rpc-pipe"
-	rpctls "github.com/issueye/ada_go_v2/plugins/provider/rpc-tls"
 	sandboxnone "github.com/issueye/ada_go_v2/plugins/provider/sandbox-none"
 	secretsenv "github.com/issueye/ada_go_v2/plugins/provider/secrets-env"
 	sessionjsonl "github.com/issueye/ada_go_v2/plugins/provider/session-jsonl"
@@ -51,7 +45,6 @@ import (
 	seamfs "github.com/issueye/ada_go_v2/plugins/seam/fs"
 	seamllm "github.com/issueye/ada_go_v2/plugins/seam/llm"
 	seamprompts "github.com/issueye/ada_go_v2/plugins/seam/prompts"
-	seamrpc "github.com/issueye/ada_go_v2/plugins/seam/rpc"
 	seamsandbox "github.com/issueye/ada_go_v2/plugins/seam/sandbox"
 	seamsecrets "github.com/issueye/ada_go_v2/plugins/seam/secrets"
 	seamsession "github.com/issueye/ada_go_v2/plugins/seam/session"
@@ -114,13 +107,6 @@ func Plugins() map[string]func() kernel.Plugin {
 		"fs-observe":       fsobserve.Plugin,
 		"shell-redact":     shellredact.Plugin,
 		"shell-observe":    shellobserve.Plugin,
-		"seam-rpc":         seamrpc.Plugin,
-		"rpc-json":         rpcjson.Plugin,
-		"rpc-net":          rpcnet.Plugin,
-		"rpc-pipe":         rpcpipe.Plugin,
-		"rpc-tls":          rpctls.Plugin,
-		"rpc-guard":        rpcguard.Plugin,
-		"rpc-observe":      rpcobserve.Plugin,
 	}
 }
 

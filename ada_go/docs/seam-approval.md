@@ -82,7 +82,7 @@ fs-sandbox / shell-guard ──可选 inject "approval"──▶ 拒绝时 Ask()
 
 1. 审计字段补全会话 id 与目标摘要;URL target 已在提示/事件/审计中脱敏,非 URL 路径保持原样。
 2. `core/approval` 桌面 UI 审批人;CLI 审批人已由 `provider/approval-cli` 提供。
-3. `policy/approval-gate` 已接到 `tools/pre-execute`;caps 已由 `caps-gate`/`secrets-guard`/`rpc-guard` 独立强制。
+3. `policy/approval-gate` 已接到 `tools/pre-execute`;caps 已由 `caps-gate`/`secrets-guard` 独立强制。
 4. 审批人路由(按 op/来源);批量审批与会话级「记住本次决定」。
 
 ## 7. 验证命令

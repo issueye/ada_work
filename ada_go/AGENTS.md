@@ -2,7 +2,7 @@
 
 > 给在本仓库工作的 AI 代理与人类协作者。**动代码之前先读这一份**；它与设计文档冲突时，以本文件的红线为准，并立刻提 issue 修正文档。
 
-**当前阶段:M1 内核、M2 执行层、M3 装配、M4 编排(`sched`/`quota`/`flow`(含 fanout/subflow)/`bundle`,内核回收 + 装配层 on-demand 延迟激活(含 onService/onCron/onEvent 触发 helper)+ jobs 跨进程锁)、M4.5 Agent Core 第一刀(`prompts`/`llm`/`tools`/`agent-loop` + `provider/llm-openai`/`llm-replay` + `provider/session-jsonl`(每会话 actor) + `core/session-stats`(turn-stats 投影) + `core/compaction-basic`(确定性摘要) + `agent-loop` 并行工具 + `policy/approval-gate`/`llm-retry`/`tool-timeout` + 最小 preset,已跑通「用户消息 → 模型 → 工具 → 结果」的最小回路)、M5 安全(`fs`/`fs-local`/`fs-sandbox`、`shell`/`shell-local`/`shell-guard`、`sandbox`/`sandbox-none`、`fs-redact` 脱敏、`fs-observe`/`shell-observe` 观察事件、`audit-log` 审计落盘、`shell-redact` 输出脱敏,且 fs/shell 策略已调用 sandbox.Resolve、可升级拒绝走 approval(含 CLI 交互审批)、caps 静态授权 + `caps-gate` 调用点强制(fs/shell)、install 校验/原子落盘/本机索引/CLI 安装同意、`platform/host/cli`/`platform/host/server`/`platform/host/desktop`(视图映射骨架)/`platform/host/registry`(只读仓库服务)宿主适配器(共享 `platform/host/builtins` 内置插件)、网络直连(`node:http`/`net`/`dns` 走宿主标准库,无 `seam/net`/`net-guard`,见 ADR 0011/0012)、`secrets`(seam/secrets + provider/secrets-env + secrets-guard 授权)、`workspace`(seam/workspace + provider/workspace-local + workspace-guard + workspace-helper + fs/shell 托管解析 + 会话绑定)已落地**,M5 剩余 desktop 真实窗口/OS 级沙箱(Linux 后端;见 ADR 0001,复议 2027-01-15);C13 拒绝矩阵与 `ada inspect --chain` 已落地;RPC P0–P4(TLS) 已落地(`rpc-guard`/`rpc-observe`/`rpc-tls`,`SO_PEERCRED` 待做)。本文件始终生效:先用它约束设计,再用它约束实现。
+**当前阶段:M1 内核、M2 执行层、M3 装配、M4 编排(`sched`/`quota`/`flow`(含 fanout/subflow)/`bundle`,内核回收 + 装配层 on-demand 延迟激活(含 onService/onCron/onEvent 触发 helper)+ jobs 跨进程锁)、M4.5 Agent Core 第一刀(`prompts`/`llm`/`tools`/`agent-loop` + `provider/llm-openai`/`llm-replay` + `provider/session-jsonl`(每会话 actor) + `core/session-stats`(turn-stats 投影) + `core/compaction-basic`(确定性摘要) + `agent-loop` 并行工具 + `policy/approval-gate`/`llm-retry`/`tool-timeout` + 最小 preset,已跑通「用户消息 → 模型 → 工具 → 结果」的最小回路)、M5 安全(`fs`/`fs-local`/`fs-sandbox`、`shell`/`shell-local`/`shell-guard`、`sandbox`/`sandbox-none`、`fs-redact` 脱敏、`fs-observe`/`shell-observe` 观察事件、`audit-log` 审计落盘、`shell-redact` 输出脱敏,且 fs/shell 策略已调用 sandbox.Resolve、可升级拒绝走 approval(含 CLI 交互审批)、caps 静态授权 + `caps-gate` 调用点强制(fs/shell)、install 校验/原子落盘/本机索引/CLI 安装同意、`platform/host/cli`/`platform/host/server`/`platform/host/desktop`(视图映射骨架)/`platform/host/registry`(只读仓库服务)宿主适配器(共享 `platform/host/builtins` 内置插件)、网络直连(`node:http`/`net`/`dns` 走宿主标准库,无 `seam/net`/`net-guard`,见 ADR 0011/0012)、`secrets`(seam/secrets + provider/secrets-env + secrets-guard 授权)、`workspace`(seam/workspace + provider/workspace-local + workspace-guard + workspace-helper + fs/shell 托管解析 + 会话绑定)已落地**,M5 剩余 desktop 真实窗口/OS 级沙箱(Linux 后端;见 ADR 0001,复议 2027-01-15);C13 拒绝矩阵与 `ada inspect --chain` 已落地;ACP 是唯一宿主协议,原 RPC 通讯栈(`seam/rpc` + `rpc-*`)已按 ADR 0018 移除。本文件始终生效:先用它约束设计,再用它约束实现。
 
 ---
 
@@ -73,8 +73,8 @@
 | [seam-api.md](docs/seam-api.md) | 首批 seam 契约：llm / tools / session / prompts |
 | [m4.5-agent-core.md](docs/m4.5-agent-core.md) | M4.5 第一刀:prompts/llm/tools/agent-loop、最小 preset 与 golden |
 | [seam-api-security.md](docs/seam-api-security.md) | 安全 seam 契约：sandbox / fs / shell |
-| [seam-rpc.md](docs/seam-rpc.md) | RPC 通讯:seam/rpc + rpc-json/net/pipe/tls + rpc-guard/observe(P0–P4 TLS) |
-| [rpc-control-layers.md](docs/rpc-control-layers.md) | RPC/ACP 五层控制架构:control 契约、Go/TS 实现、control-acp、`ada acp`(control-rpc 已移除) |
+| [seam-rpc.md](docs/seam-rpc.md) | **已移除**:原 seam/rpc + rpc-* 通讯栈的移除说明与替代路径(ADR 0018) |
+| [rpc-control-layers.md](docs/rpc-control-layers.md) | 五层控制架构(ACP):control 契约、Go/TS 实现、control-acp、`ada acp` |
 | [seam-acp.md](docs/seam-acp.md) | ACP client 反向能力:fs/read_text_file、fs/write_text_file、terminal/* |
 | [ui-framework.md](docs/ui-framework.md) | 提案:无 Node 的插件化 SPA(未实现) |
 | [kernel-api.md](docs/kernel-api.md) | M1 冻结的内核 API 与已知边界 |
@@ -115,7 +115,7 @@
 | [adr/0006](docs/adr/0006-custom-ui-components.md) | ADR(提案):受控自定义 UI 组件 |
 | [adr/0007](docs/adr/0007-host-web-budget.md) | ADR(提案):host/web 与 host 预算例外 |
 | [adr/0008](docs/adr/0008-desktop-webview-shell.md) | ADR(提案):桌面只做 WebView 壳 |
-| [adr/0009](docs/adr/0009-rpc-json-budget.md) | ADR:rpc-json 单插件预算例外 |
+| [adr/0009](docs/adr/0009-rpc-json-budget.md) | ADR:rpc-json 单插件预算例外(**已被 ADR 0018 撤销**) |
 | [adr/0010](docs/adr/0010-session-jsonl-budget.md) | ADR:session-jsonl 单插件预算例外 |
 | [adr/0011](docs/adr/0011-node-network-direct.md) | ADR:Node 网络模块直连,不接入 net-guard |
 | [adr/0012](docs/adr/0012-remove-seam-net.md) | ADR:移除 seam/net、net-http、net-guard、net-observe |
@@ -124,6 +124,7 @@
 | [adr/0015](docs/adr/0015-refused-node-modules.md) | ADR:不实现 worker_threads / inspector / async_hooks / trace_events(复议 2027-06-30) |
 | [adr/0016](docs/adr/0016-no-fs-watch.md) | ADR:不实现 fs.watch / fs.watchFile(复议 2027-06-30) |
 | [adr/0017](docs/adr/0017-control-acp-budget.md) | ADR:control-acp 单插件预算例外(复议 2027-06-30) |
+| [adr/0018](docs/adr/0018-remove-rpc-stack.md) | ADR:移除 seam/rpc 与 rpc-* 通讯栈、撤销 ADR 0009(复议 2027-06-30) |
 | [seam-secrets.md](docs/seam-secrets.md) | M5 secret 能力:seam/secrets 与 provider/secrets-env |
 | [seam-fs.md](docs/seam-fs.md) | M5 安全第一刀:seam/fs、fs-local 实现与 fs-sandbox 策略 |
 | [workspace-plugin.md](docs/workspace-plugin.md) | 工作区:seam/workspace、workspace-local、workspace-guard、workspace-helper 与会话绑定 |
@@ -268,7 +269,7 @@ platform/host/*   ✓→ 全部
 |---|---|---|
 | `platform/kernel/` | ≤ 3000 行 | 内核越厚，插件越难替换 |
 | `platform/host/*` | ≤ 2500 行（每个适配器 ≤ 800；`platform/host/cli` ≤ 1500，ADR 0002 临时例外） | 宿主只做映射；CLI 的参数解析/输出计入预算，拆分包后回滚例外 |
-| 单个插件 | ≤ 800 行，单一职责（例外:`rpc-json` ≤ 1300，ADR 0009;`session-jsonl` ≤ 1000，ADR 0010;`control-acp` ≤ 1000，ADR 0017;`memory-helper` ≤ 1100、`http-helper` ≤ 900，ADR 0013） | 混装说明该拆;例外有复议日期 |
+| 单个插件 | ≤ 800 行，单一职责（例外:`session-jsonl` ≤ 1000，ADR 0010;`control-acp` ≤ 1000，ADR 0017;`memory-helper` ≤ 1100、`http-helper` ≤ 900，ADR 0013） | 混装说明该拆;例外有复议日期 |
 | 单个 seam 包 | ≤ 400 行（只有类型/错误/事件名） | 出现实现即违规 |
 
 ### 5.4 命名与结构约定

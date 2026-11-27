@@ -103,9 +103,8 @@ preset 只启用栈内插件,其余全部写入 `disable`(不在 allowlist 里�
 - `agent-real-release`(可选): 用 `llm-openai` 替换 `llm-replay`,同样带 shell 栈。
 
 未启用的插件仍以清单形式随包发布,方便后续在 preset 中启用;启用时必须补上它自己的配置。
-保持默认关闭的只有四类:**互斥实现**(`llm-openai` 对 `llm-replay`、`session-jsonl` 对
-`session-memory`)、**审批人**(`approval-cli`/`approval-deny`)、**宿主传输**(`rpc-*` 与
-`seam-rpc`,留给需要 RPC 的宿主自己装配)、**守卫/策略**(`fs-sandbox`、`caps-gate`、
+保持默认关闭的只有三类:**互斥实现**(`llm-openai` 对 `llm-replay`、`session-jsonl` 对
+`session-memory`)、**审批人**(`approval-cli`/`approval-deny`)、**守卫/策略**(`fs-sandbox`、`caps-gate`、
 `approval-gate`、`audit-log`、`*-redact`/`*-observe`、`llm-retry`、`tool-timeout`、
 `secrets-guard`、`workspace-guard` 等——它们会改变默认行为,是否开启属于产品口径)。
 

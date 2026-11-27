@@ -1,9 +1,12 @@
 # ADR 0009:rpc-json 代码预算例外
 
-- 状态:已接受(临时例外;代码先落地,本 ADR 追认)
+- 状态:**已被 [ADR 0018](0018-remove-rpc-stack.md) 撤销**(`rpc-json` 插件已随 seam/rpc 通讯栈整体移除)
 - 日期:2026-11-20
 - 复议日期:2027-06-30
 - 相关:[seam-rpc.md](../seam-rpc.md)、AGENTS §5.3/§12、[ADR 0002](0002-host-budget-exception.md)(同类先例)
+
+> 本 ADR 作为历史记录保留。自 ADR 0018 起,平台不再有 `provider/rpc-json`,
+> 因此本例外**不再约束任何插件**,也不得被当作扩额依据。
 
 ## 1. 背景
 

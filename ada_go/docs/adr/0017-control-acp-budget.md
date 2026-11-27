@@ -3,7 +3,7 @@
 - 状态:已接受(临时例外)
 - 日期:2026-11-26
 - 复议日期:2027-06-30
-- 相关:[rpc-control-layers.md](../rpc-control-layers.md)、[seam-acp.md](../seam-acp.md)、AGENTS §5.3/§12、[ADR 0009](0009-rpc-json-budget.md)/[ADR 0013](0013-tool-plugin-budget-exception.md)(同类先例)
+- 相关:[rpc-control-layers.md](../rpc-control-layers.md)、[seam-acp.md](../seam-acp.md)、AGENTS §5.3/§12、[ADR 0013](0013-tool-plugin-budget-exception.md)(同类先例);ADR 0009 已由 [ADR 0018](0018-remove-rpc-stack.md) 撤销
 
 ## 1. 背景
 

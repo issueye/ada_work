@@ -1,12 +1,12 @@
-# RPC/ACP 五层控制架构
+# 控制层五层架构(ACP)
 
 > 状态：**第 2 层控制契约 + Go/TS 实现、第 3 层 ACP 适配、第 4 层 jsonrpc2、第 5 层 stdio、宿主入口 `ada acp` 已落地**；ACP 的 permission、fs/terminal 反向能力与 `acp-helper` 已接，MCP 与会话级路由待做。
-> RPC 侧的 `control-rpc` 适配器已随 `cmd/ada-rpc-agent` 一起移除（ada_chat 改用 ACP）；seam RPC 栈本身保留。
-> 关联：[seam-rpc.md](seam-rpc.md)、[AGENTS §2/§3](../AGENTS.md)。
+> RPC 侧已整体移除：`control-rpc` 适配器、`cmd/ada-rpc-agent` 宿主与整个 `seam/rpc` / `rpc-*` 通讯栈（ADR 0018）；ACP 是唯一控制面。
+> 关联：[seam-rpc.md](seam-rpc.md)（已移除说明）、[seam-acp.md](seam-acp.md)、[AGENTS §2/§3](../AGENTS.md)。
 
 ## 0. 结论
 
-采用五层，而不是把 ACP 塞进现有 RPC：
+采用五层，把 ACP 作为唯一协议适配面：
 
 ```
 ada_go 能力（agent-loop / session / tools / fs / shell）
@@ -29,8 +29,8 @@ ACP 适配器不直接调 `agent-loop` 或具体 `fs` provider。
 |---|---|---|
 | 能力层 | `Agent.Run`、`seam/session`、`seam/tools`、`seam/fs`、`seam/shell` | 协议、连接、鉴权 |
 | 控制层 | 会话创建/加载、prompt、取消、权限请求、流式更新 | 帧、握手、stdio、JSON-RPC 字段 |
-| 协议适配层 | 把 RPC 方法或 ACP 方法翻译成控制调用 | 具体 agent 逻辑、具体编码 |
-| 消息通道/编码 | 长度前缀帧或 JSON-RPC 2.0 消息、id/取消/通知 | agent 语义 |
+| 协议适配层 | 把 ACP 方法翻译成控制调用 | 具体 agent 逻辑、具体编码 |
+| 消息通道/编码 | JSON-RPC 2.0 消息、id/取消/通知 | agent 语义 |
 | 传输层 | 字节流与监听/连接 | 消息格式 |
 
 ## 2. 控制层：Go 与 TS 两种实现
@@ -99,12 +99,10 @@ prompt 未返回时到达对端（不是结束后补发）。
 | `core/agent-control` | 2 实现 | ✅ `agent.runner` → `control.Invoker`；create/load/list/prompt/history/cancel/permission/close；token 级 `assistant/delta`；取消返回 `cancelled`；`load` 可按 id 恢复；同一会话单轮串行 |
 | `core/plan` | 2 实现 | ✅ 会话级计划：`plan_set` / `plan_update` / `plan_show`；计划写成 `plugin:plan/updated` session 事件；ACP 映射成 `plan` |
 | `seam/agent` | 能力契约 | ✅ `Runner`（Open/Run） |
-| `provider/rpc-json` | 3+4 | ◐ 现有 v1 协议；不对接控制层（原 `control-rpc` 适配器已移除） |
 | `provider/jsonrpc2` | 4 | ✅ 双向 JSON-RPC 2.0 连接、id/错误/通知、行上限、`null` 结果；连接关闭会取消 handler ctx |
 | `provider/control-acp` | 3 | ✅ initialize/session/new/load/prompt/cancel；`session/load` 回放历史；`session/update` 实时转发（assistant 文本/推理 + tool_call/tool_call_update）；`session/request_permission` + `approval.Approver`；反向 fs/terminal 能力 |
 | `seam/acp` | 2 契约 | ✅ client 能力契约 + `Registry`（单连接绑定） |
 | `platform/host/cli`（`ada acp`） | 宿主入口 | ✅ 装配 preset → control 服务 → stdio 上的 ACP；日志走 stderr |
-| `provider/rpc-stdio` | 5 | ✅ stdio 单连接 Transport + Listener |
 
 ## 4. 为什么 TS 实现不破坏插件系统
 
@@ -259,7 +257,7 @@ agent-control + tool-helper，不依赖网络与磁盘会话；回放里带一�
 ## 7. 迁移顺序
 
 1. 控制契约 + Go/TS 实现通路（已完成；Go 由 `core/agent-control`，TS 由 bridge 包装）；
-2. `provider/jsonrpc2` + `provider/rpc-stdio`（已完成）；
+2. `provider/jsonrpc2`（已完成）；
 3. `provider/control-acp` 最小聊天闭环（已完成）；
 4. 权限（已完成）：`session/request_permission` ↔ `approval.Approver`；
 5. 宿主入口（已完成）：`ada acp` + `examples/acp`；
@@ -276,4 +274,4 @@ go test -run TestACPServe -v ./platform/host/cli
 ```
 
 Go 与 TS 的契约测试应共享同一组 JSON fixture；任何新增方法必须同时更新
-[seam-rpc.md](seam-rpc.md) 与本文。
+[seam-acp.md](seam-acp.md) 与本文。

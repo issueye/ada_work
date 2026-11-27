@@ -45,7 +45,7 @@ cmd/ada/     只做 os.Exit(cli.Run(os.Args[1:], os.Stdout, os.Stderr))
 - install(安装到临时目录并检查文件);
 - 内置安全栈 up(seam-fs + fs-local + caps-static + caps-gate)。
 
-**内置 Go 插件注册表**:与 `platform/host/builtins` 共享同一份内置 seam/provider/policy(seam-fs、fs-local、caps-static、caps-gate、observers、redact、seam-secrets/secrets-env、seam-rpc/rpc-json/rpc-tls/rpc-guard/rpc-observe 等),因此 `up`/`inspect` 可以直接挂安全/secret/rpc 栈;第三方 Go 插件仍需宿主编译时注册。`up`/`inspect` 会在挂载前把清单 caps 灌进提供 `caps` 服务的插件(`applyAutoGrants`),让 `caps-gate` 用同一份授权表。
+**内置 Go 插件注册表**:与 `platform/host/builtins` 共享同一份内置 seam/provider/policy(seam-fs、fs-local、caps-static、caps-gate、observers、redact、seam-secrets/secrets-env 等),因此 `up`/`inspect` 可以直接挂安全/secret 栈;第三方 Go 插件仍需宿主编译时注册。`up`/`inspect` 会在挂载前把清单 caps 灌进提供 `caps` 服务的插件(`applyAutoGrants`),让 `caps-gate` 用同一份授权表。
 
 **顺带修掉一个缺陷**:`install` 曾复用 `verify` 的参数解析,导致 `-dest` 被当成未知参数而失败;
 现在有独立的 `parseInstallArgs` 与测试覆盖。

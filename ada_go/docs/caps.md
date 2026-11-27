@@ -12,7 +12,7 @@ plugins/provider/caps-static/  提供 "caps" 服务(*caps.Broker),让宿主/装�
 platform/assemble/                 GrantManifests:按清单 caps/trust 灌入 Broker
 ```
 
-本刀做**静态授权 + 调用点强制**:`caps-gate`(fs/shell)、`secrets-guard`、`rpc-guard`
+本刀做**静态授权 + 调用点强制**:`caps-gate`(fs/shell)、`secrets-guard`
 从 `kernel.Principal(ctx)` 取调用者身份;`kernel.Context.Context()` 已负责把 principal 传进 ctx。
 剩余的是信任来源与目标级约束(见 §5)。
 
@@ -67,8 +67,8 @@ broker.Authorize(ctx, "plugin-a", "fs.write", "/workspace/a") // → *DeniedErro
 
 ## 5. 偏差与边界
 
-1. **调用点强制已落地(fs/shell/secrets/rpc)**:`policy/caps-gate`(fs/shell)、`policy/secrets-guard`(secrets)、
-   `policy/rpc-guard`(rpc)从 `kernel.Principal(ctx)` 取调用者,向 Broker 查能力;
+1. **调用点强制已落地(fs/shell/secrets)**:`policy/caps-gate`(fs/shell)、`policy/secrets-guard`(secrets)
+   从 `kernel.Principal(ctx)` 取调用者,向 Broker 查能力;
    缺少身份/未授权一律拒绝。`caps-gate` 优先使用注入的 `caps` 服务;`assemble.GrantManifests` 把清单 `caps`/`trust` 灌入 Broker;CLI 的 `up`/`inspect` 已通过 `applyAutoGrants` 自动接线。
 2. **trust 来源已接安装索引**:`plugin.LoadDir` 把磁盘非 Go 插件降为 `third-party`;
    `install.LoadDir` 对安装根目录按 `index.json` 回填 verified/official;直接拷入的非安装目录

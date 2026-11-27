@@ -113,14 +113,16 @@ v2 把「插件」从**被调用的函数袋**升级成**可编排的作用域�
 | [adr/0006](docs/adr/0006-custom-ui-components.md) | ADR(提案):受控自定义 UI 组件(反转「插件不画 UI」) |
 | [adr/0007](docs/adr/0007-host-web-budget.md) | ADR(提案):platform/host/web 与 host 总行数预算例外 |
 | [adr/0008](docs/adr/0008-desktop-webview-shell.md) | ADR(提案):桌面只做 WebView 壳(mygo WebView2/Electron)，不做 native UI |
-| [adr/0009](docs/adr/0009-rpc-json-budget.md) | ADR:rpc-json 单插件预算例外(已接受) |
+| [adr/0009](docs/adr/0009-rpc-json-budget.md) | ADR:rpc-json 单插件预算例外(**已被 ADR 0018 撤销**) |
 | [adr/0010](docs/adr/0010-session-jsonl-budget.md) | ADR:session-jsonl 单插件预算例外(已接受) |
 | [adr/0013](docs/adr/0013-tool-plugin-budget-exception.md) | ADR:memory-helper / http-helper 预算例外(复议 2027-06-30) |
 | [adr/0014](docs/adr/0014-call-scoped-event-loop.md) | ADR:执行层事件循环按调用边界驱动(已修订 2026-11-26,新增 LoopResident;复议 2027-03-31) |
 | [adr/0015](docs/adr/0015-refused-node-modules.md) | ADR:不实现 worker_threads / inspector / async_hooks / trace_events(复议 2027-06-30) |
 | [adr/0016](docs/adr/0016-no-fs-watch.md) | ADR:fs.watch/watchFile 的实现边界(已修订 2026-11-26,LoopResident 下轮询;复议 2027-06-30) |
-| [seam-rpc.md](docs/seam-rpc.md) | RPC 通讯:P0–P4(TLS) 已实现(tcp/unix/pipe、帧/握手/取消、rpc-guard/observe、tls://) |
-| [rpc-control-layers.md](docs/rpc-control-layers.md) | 五层控制架构:控制契约、Go/TS 双实现通路、RPC/ACP 适配方向 |
+| [adr/0017](docs/adr/0017-control-acp-budget.md) | ADR:control-acp 单插件预算例外(复议 2027-06-30) |
+| [adr/0018](docs/adr/0018-remove-rpc-stack.md) | ADR:移除 seam/rpc 与 rpc-* 通讯栈、撤销 ADR 0009(复议 2027-06-30) |
+| [seam-rpc.md](docs/seam-rpc.md) | **已移除**:seam/rpc 与 rpc-* 通讯栈的移除说明(ADR 0018);ACP 是唯一宿主协议 |
+| [rpc-control-layers.md](docs/rpc-control-layers.md) | 五层控制架构:控制契约、Go/TS 双实现通路、ACP 适配与 `ada acp` |
 | [node-compat.md](docs/node-compat.md) | Node 内置模块兼容层:node:fs/path/os/events/util 等 |
 | [seam-secrets.md](docs/seam-secrets.md) | M5 secret 能力:seam/secrets 与 provider/secrets-env |
 | [seam-session.md](docs/seam-session.md) | seam/session 与 session-memory |

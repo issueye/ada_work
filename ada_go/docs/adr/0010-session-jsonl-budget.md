@@ -3,7 +3,7 @@
 - 状态:已接受(临时例外;代码先落地,本 ADR 追认)
 - 日期:2026-11-20
 - 复议日期:2027-06-30
-- 相关:[seam-session.md](../seam-session.md)、AGENTS §5.3/§12、[ADR 0009](0009-rpc-json-budget.md)
+- 相关:[seam-session.md](../seam-session.md)、AGENTS §5.3/§12、[ADR 0017](0017-control-acp-budget.md)(同类先例)
 
 ## 1. 背景
 

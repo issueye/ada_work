@@ -14,7 +14,7 @@
 | M4 编排 | ✅ 完成(文档口径) | platform/sched/platform/quota/platform/flow/platform/bundle/回收/延迟激活/jobs 锁 |
 | M4.5 Agent Core | ⚠️ 第一刀完成 | prompts/llm/tools/agent-loop + 最小 preset + memory/jsonl session + turn-stats 投影 + compaction-basic;真实端点与策略已落地,模型摘要可选/并行工具 |
 | M5 安全与宿主 | ⚠️ 部分完成 | 安全 seam/caps/install/宿主/C13/inspect chain 已落地;仅剩 **OS 级沙箱强制** 与 **真实桌面窗口** |
-| RPC 通讯(新增) | ✅ P0–P4(TLS) | seam/rpc + rpc-json + tcp/unix/pipe + rpc-guard/rpc-observe + tls://;SO_PEERCRED/桌面 Transport 待做 |
+| RPC 通讯 | ❌ 已移除 | 原 seam/rpc + rpc-* 栈按 ADR 0018 整体删除;宿主通讯只剩 ACP(stdio + jsonrpc2) |
 
 ## 1. M4.5 验收矩阵
 
@@ -101,17 +101,20 @@
 | `ada inspect --chain` | `platform/host/cli` | `cli.TestInspectChain`、`cli.TestAgentWorkspace` | 显示 fs/shell/workspace 优先级 |
 | 内置栈接线 | `platform/host/builtins` | `builtins.TestBuiltinGoPlugins`、`cli.TestUpSecretsStack` | secrets 已接入宿主;其它 Go 插件仍需编译时注册 |
 
-### 2.6 RPC 通讯(P0–P4 TLS,新增能力)
+### 2.6 RPC 通讯(已移除)
 
-| 验收项 | 实现位置 | 证据 | 已知边界 |
-|---|---|---|---|
-| RPC 契约与链 | `plugins/seam/rpc` | `rpc`(3) | Chain/Registry;无 I/O |
-| 帧/握手/调用/事件/取消 | `plugins/provider/rpc-json` | `rpc-json`(8) | 无写队列;`rpc-json` 预算例外见 ADR 0009 |
-| tcp/unix 传输 | `plugins/provider/rpc-net` | `rpc-net`(6) | unix socket 0600/stale;非 loopback 由宿主自控 |
-| Windows 命名管道 | `plugins/provider/rpc-pipe` | `rpc-pipe`(3) | DACL 当前用户+SYSTEM;拒绝远程客户端 |
-| 授权(rpc-guard) | `plugins/policy/rpc-guard` | `rpcguard.TestDial`/`TestListen`/`TestListenDenied`/`TestAuthRequiresSecret` | 地址/方法/peer 白名单 + caps `rpc.call`/`rpc.listen`;无 Broker 时只做白名单 |
-| 观察(rpc-observe) | `plugins/policy/rpc-observe` | `rpcobserve.TestObserveOutbound`/`TestObserveInbound` | payload 不含 params/result;inbound peer 来自 principal |
-| TLS 传输 | `plugins/provider/rpc-tls` | `rpctls.TestTLSRoundTrip`/`TestTLSRPCIntegration` | 需要证书/CA;远程明文 TCP 仍拒绝;`SO_PEERCRED` 待做 |
+原 P0–P4 RPC 栈(`seam/rpc` + `rpc-json`/`rpc-net`/`rpc-pipe`/`rpc-stdio`/`rpc-tls` +
+`rpc-guard`/`rpc-observe`)已按 [ADR 0018](adr/0018-remove-rpc-stack.md) 整体移除:
+
+| 原验收项 | 原实现位置 | 处理 |
+|---|---|---|
+| RPC 契约与链 | `plugins/seam/rpc` | 删除;跨进程控制面改由 ACP 承担 |
+| 帧/握手/调用/事件/取消 | `plugins/provider/rpc-json` | 删除(ADR 0009 预算例外一并撤销) |
+| tcp/unix、Windows 管道、stdio、TLS 传输 | `rpc-net`/`rpc-pipe`/`rpc-stdio`/`rpc-tls` | 删除;宿主只剩 stdio(ACP) |
+| 授权与观察 | `rpc-guard`/`rpc-observe` | 删除;ACP 权限由 `session/request_permission` 承担 |
+
+替代路径与历史细节见 [seam-rpc.md](seam-rpc.md)、ADR 0018;`plugins/provider/jsonrpc2` 保留
+(ACP 的消息通道)。
 
 ## 3. 门禁与证据
 
@@ -119,7 +122,7 @@
 pwsh scripts/guard.ps1     # 词汇/依赖/gofmt/build/vet/staticcheck/race/交叉编译/kernel+host 预算
 pwsh scripts/bench.ps1     # 单次调用 ≤ 20 μs、50 插件冷启动 ≤ 150 ms
 go test -race -count=1 ./...
-go test -race -count=1 ./plugins/seam/rpc ./plugins/provider/rpc-json ./plugins/provider/rpc-net ./plugins/provider/rpc-pipe
+go test -race -count=1 ./plugins/provider/control-acp ./plugins/provider/jsonrpc2
 go run ./cmd/ada plan --preset examples/agent/agent.preset.json
 go run ./cmd/ada inspect --chain --preset examples/agent/agent.preset.json
 go run ./cmd/ada plan --preset examples/workspace/workspace.preset.json
