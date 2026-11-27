@@ -1,0 +1,11 @@
+{
+  "id": "llm-replay",
+  "name": "llm-replay",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "llm"
+    ]
+  }
+}

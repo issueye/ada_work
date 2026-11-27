@@ -1,0 +1,11 @@
+{
+  "id": "tool-timeout",
+  "name": "tool-timeout",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "tools"
+    ]
+  }
+}

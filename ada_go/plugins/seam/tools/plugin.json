@@ -1,0 +1,10 @@
+{
+  "id": "seam-tools",
+  "name": "seam-tools",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {},
+  "provide": [
+    "tools"
+  ]
+}

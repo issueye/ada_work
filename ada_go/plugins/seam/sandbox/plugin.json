@@ -1,0 +1,10 @@
+{
+  "id": "seam-sandbox",
+  "name": "seam-sandbox",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {},
+  "provide": [
+    "sandbox"
+  ]
+}

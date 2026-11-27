@@ -1,0 +1,11 @@
+{
+  "id": "seam-rpc",
+  "name": "seam-rpc",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {},
+  "provide": [
+    "rpc",
+    "rpc-transport"
+  ]
+}

@@ -1,8 +1,0 @@
-{
-  "id": "agent-control",
-  "name": "agent control",
-  "version": "0.1.0",
-  "kind": "go",
-  "provide": ["control"],
-  "inject": {"required": ["agent.runner"], "optional": ["approval"]}
-}

@@ -1,7 +1,0 @@
-{
-  "id": "seam-approval",
-  "name": "approval seam",
-  "version": "0.1.0",
-  "kind": "go",
-  "provide": ["approval"]
-}

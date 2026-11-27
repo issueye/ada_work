@@ -1,0 +1,10 @@
+{
+  "id": "seam-prompts",
+  "name": "seam-prompts",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {},
+  "provide": [
+    "prompts"
+  ]
+}

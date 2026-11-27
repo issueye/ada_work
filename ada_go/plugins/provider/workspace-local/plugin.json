@@ -1,0 +1,11 @@
+{
+  "id": "workspace-local",
+  "name": "workspace-local",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "workspace"
+    ]
+  }
+}

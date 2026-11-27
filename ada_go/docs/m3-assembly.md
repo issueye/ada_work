@@ -85,24 +85,30 @@ preset 是**数据不是代码**(AGENTS §2.2 的组合数据类):产品差异�
 ```json
 {
   "name": "base",
-  "plugins": ["../plugins"],
-  "disable": ["presenter"]
+  "plugins": ["../../plugins"],
+  "enable": ["agent-loop", "fs-local", "llm-replay"],
+  "disable": ["llm-openai"],
+  "patch": {"agent-loop": {"model": "replay"}}
 }
 ```
 
 | 字段 | 语义 |
 |---|---|
 | `name` | kebab-case,用于报告 |
-| `plugins` | 插件目录列表;相对路径按 **preset 文件所在目录**解析 |
-| `disable` | 置为 disabled(计划告警并排除) |
+| `plugins` | 插件目录列表;相对路径按 **preset 文件所在目录**解析。目录可以是单插件目录、插件目录集合,或**一层分类目录**(`plugins/` 下的 `seam`/`provider`/...) |
+| `enable` | **候选白名单**:只保留名单里的插件,其余不进入装配;不写则不收口(目录里的全部插件都是候选) |
+| `disable` | 在候选集合里置为 disabled(计划告警并排除);允许与 `enable` 重叠,表示「收下但默认不启用」 |
 | `patch` | 每个插件的 config **深合并**覆盖;对象递归、其余值直接替换 |
 
 约束与语义:
 
 - patch **只能覆盖 `config`**:id/kind/inject/provide 属于插件身份与依赖图,不是参数,不能被 preset 改;
-- `disable`/`patch` 指向不存在的插件 → **报错**(静默忽略会让作者以为配置生效了);
+- `disable`/`patch`/`enable` 指向不存在的插件 → **报错**(静默忽略会让作者以为配置生效了);
 - 同一 id 出现在多个目录 → 展开时报错;
-- 深合并的理由:patch 只写「与默认不同的那个键」,强制整体替换会逼作者复制全部默认值,默认值一改就漂移。
+- 深合并的理由:patch 只写「与默认不同的那个键」,强制整体替换会逼作者复制全部默认值,默认值一改就漂移;
+- **为什么要 `enable`**:内置插件已经统一到 `plugins/` 一个目录里(preset 直接写 `../../plugins`),
+  `enable` 把「这个产品要哪几个」表达成数据;`enable` 与 `disable` 重叠时,`disable` 的那几个
+  仍在清单里但默认关着——宿主运行期可以打开备选实现(例如 `ada-rpc-agent` 切换 LLM 供应商)。
 
 ## 5. 装载(`loader.Lookup`)
 
@@ -162,6 +168,7 @@ go run ./cmd/ada inspect --preset examples/git-ts/git.preset.json -json
 | 按序挂载并真的提供服务 | `assemble.TestUpMountsInPlanOrder` |
 | 失败逆序回滚 / 坏计划拒绝 / 缺 Lookup | `assemble.TestUpRollsBackOnFailure`、`assemble.TestUpRejectsBadPlan`、`assemble.TestUpWithoutLookup` |
 | preset:展开 + disabled + config 深合并 | `preset.TestLoadExpandAppliesDisableAndPatch` |
+| preset:enable 白名单收口 / 缺失目标报错 | `preset.TestExpandEnableAllowlist` |
 | preset:相对路径按文件目录解析 | `preset.TestRelativeToPresetDir` |
 | preset:未知 disable/patch 目标报错 | `preset.TestUnknownTargetsFail` |
 | preset:自身校验 / 跨目录重复 id | `preset.TestPresetValidation`、`preset.TestDuplicateIDAcrossDirs` |

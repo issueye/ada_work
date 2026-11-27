@@ -1,7 +1,0 @@
-{
-  "id": "seam-llm",
-  "name": "llm seam",
-  "version": "0.1.0",
-  "kind": "go",
-  "provide": ["llm"]
-}

@@ -1,0 +1,12 @@
+{
+  "id": "secrets-guard",
+  "name": "secrets-guard",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "optional": [
+      "caps",
+      "secrets"
+    ]
+  }
+}

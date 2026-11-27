@@ -1,0 +1,7 @@
+{
+  "id": "audit-log",
+  "name": "audit-log",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {}
+}

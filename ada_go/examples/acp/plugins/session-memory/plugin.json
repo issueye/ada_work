@@ -1,7 +1,0 @@
-{
-  "id": "session-memory",
-  "name": "session memory",
-  "version": "0.1.0",
-  "kind": "go",
-  "inject": {"required": ["session"]}
-}

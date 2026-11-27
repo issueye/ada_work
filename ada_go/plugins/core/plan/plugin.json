@@ -1,0 +1,11 @@
+{
+  "id": "plan",
+  "name": "plan",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "tools"
+    ]
+  }
+}

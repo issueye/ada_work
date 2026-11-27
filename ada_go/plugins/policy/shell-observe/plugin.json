@@ -1,0 +1,11 @@
+{
+  "id": "shell-observe",
+  "name": "shell-observe",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "shell"
+    ]
+  }
+}

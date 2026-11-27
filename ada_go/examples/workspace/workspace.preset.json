@@ -1,10 +1,105 @@
 {
   "name": "workspace",
-  "plugins": ["../agent/plugins", "plugins", "../../plugins/tool/text-helper"],
-  "disable": ["llm-openai", "session-jsonl"],
+  "plugins": [
+    "../../plugins"
+  ],
+  "enable": [
+    "agent-loop",
+    "approval-gate",
+    "compaction-basic",
+    "fs-local",
+    "llm-openai",
+    "llm-replay",
+    "plan",
+    "seam-approval",
+    "seam-fs",
+    "seam-llm",
+    "seam-prompts",
+    "seam-session",
+    "seam-tools",
+    "seam-workspace",
+    "session-jsonl",
+    "session-memory",
+    "session-stats",
+    "system-prompt",
+    "text-helper",
+    "tool-helper",
+    "workspace-guard",
+    "workspace-helper",
+    "workspace-local"
+  ],
+  "disable": [
+    "llm-openai",
+    "session-jsonl"
+  ],
   "patch": {
-    "agent-loop": {"model": "replay"},
-    "llm-replay": {"path": "examples/workspace/replay.jsonl"},
-    "fs-local": {"tmp": "examples/workspace/.ada-tmp"}
+    "agent-loop": {
+      "model": "replay"
+    },
+    "approval-gate": {
+      "timeoutMs": 20000,
+      "tools": []
+    },
+    "compaction-basic": {
+      "keepRecent": 8
+    },
+    "fs-local": {
+      "tmp": "examples/workspace/.ada-tmp",
+      "workspace": "examples/agent/workspace"
+    },
+    "llm-openai": {
+      "apiKeyEnv": "ADA_LLM_API_KEY",
+      "endpoint": "http://127.0.0.1:3050/v1",
+      "maxTokens": 128,
+      "model": "mosi/nex-n2.6"
+    },
+    "llm-replay": {
+      "defaultModel": "replay",
+      "models": [
+        {
+          "contextWindow": 8192,
+          "id": "replay",
+          "maxOutput": 1024
+        }
+      ],
+      "path": "examples/workspace/replay.jsonl"
+    },
+    "system-prompt": {
+      "identity": "你是 ada 的最小测试 agent。",
+      "rules": [
+        "先读需要的文件,再总结。",
+        "工具失败时如实说明。"
+      ]
+    },
+    "workspace-guard": {
+      "denyExec": [
+        ".git"
+      ],
+      "denyWrite": [
+        ".git",
+        ".ada-tmp"
+      ]
+    },
+    "workspace-local": {
+      "active": "repo",
+      "workspaces": [
+        {
+          "id": "repo",
+          "ignore": [
+            ".git",
+            "bin",
+            "dist"
+          ],
+          "name": "示例仓库",
+          "root": "examples/agent/workspace"
+        },
+        {
+          "id": "docs",
+          "name": "只读文档",
+          "readOnly": true,
+          "root": "examples/workspace/docs"
+        }
+      ]
+    }
   }
 }

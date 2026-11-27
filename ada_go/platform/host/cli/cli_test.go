@@ -19,6 +19,24 @@ import (
 	"github.com/issueye/ada_go_v2/platform/install"
 )
 
+// agentEnable 是 examples/agent/agent.preset.json 的候选插件集合:
+// 测试里装配 agent 栈时直接复用,避免每处各抄一份插件列表(抄的那份一定会漂移)。
+var agentEnable = []string{
+	"agent-loop", "approval-gate", "compaction-basic", "fs-local",
+	"llm-openai", "llm-replay", "plan", "seam-approval", "seam-fs", "seam-llm",
+	"seam-prompts", "seam-session", "seam-tools", "session-jsonl", "session-memory",
+	"session-stats", "system-prompt", "text-helper", "tool-helper",
+}
+
+// agentEnableJSON 返回 agent 候选集合的 JSON 数组,extra 追加在末尾。
+func agentEnableJSON(extra ...string) string {
+	ids := append(append([]string{}, agentEnable...), extra...)
+	b, err := json.Marshal(ids)
+	if err != nil {
+		panic("编码 enable 列表失败: " + err.Error())
+	}
+	return string(b)
+}
 func run(args ...string) (int, string, string) {
 	var out, errOut bytes.Buffer
 	code := cli.Run(args, &out, &errOut)
@@ -75,7 +93,7 @@ func TestUsage(t *testing.T) {
 
 // 5. verify:未签名 ts 插件是 third-party。
 func TestVerify(t *testing.T) {
-	code, out, errOut := run("verify", "../../../examples/git-ts/plugins/git-helper")
+	code, out, errOut := run("verify", "../../../plugins/tool/git-helper")
 	if code != 0 {
 		t.Fatalf("verify 应成功,code=%d err=%s", code, errOut)
 	}
@@ -213,7 +231,7 @@ func TestUp(t *testing.T) {
 // 8. install:安装到临时目录。
 func TestInstall(t *testing.T) {
 	dest := t.TempDir()
-	code, out, errOut := run("install", "../../../examples/git-ts/plugins/git-helper", "-dest", dest)
+	code, out, errOut := run("install", "../../../plugins/tool/git-helper", "-dest", dest)
 	if code != 0 {
 		t.Fatalf("install 应成功,code=%d err=%s", code, errOut)
 	}
@@ -775,7 +793,7 @@ func TestAgentTaskScriptPlugin(t *testing.T) {
 	preset := f.Name()
 	_ = f.Close()
 	t.Cleanup(func() { _ = os.Remove(preset) })
-	body := `{"name":"task-test","plugins":["../agent/plugins","plugins"],"disable":["llm-openai","session-jsonl"],"patch":{"agent-loop":{"model":"replay"},"llm-replay":{"path":"examples/task-ts/replay.jsonl"},"fs-local":{"workspace":"` + strings.ReplaceAll(workspace, `\`, `\\`) + `"}}}`
+	body := `{"name":"task-test","plugins":["../../plugins"],"enable":` + agentEnableJSON("task-helper") + `,"disable":["llm-openai","session-jsonl"],"patch":{"agent-loop":{"model":"replay"},"llm-replay":{"path":"examples/task-ts/replay.jsonl"},"fs-local":{"workspace":"` + strings.ReplaceAll(workspace, `\`, `\\`) + `"}}}`
 	if err := os.WriteFile(preset, []byte(body), 0o644); err != nil {
 		t.Fatalf("写临时 preset 失败: %v", err)
 	}
@@ -885,7 +903,7 @@ func TestAgentTextScriptPlugin(t *testing.T) {
 	preset := f.Name()
 	_ = f.Close()
 	t.Cleanup(func() { _ = os.Remove(preset) })
-	body := `{"name":"text-test","plugins":["../agent/plugins","../../plugins/tool/text-helper"],"disable":["llm-openai","session-jsonl"],"patch":{"agent-loop":{"model":"replay"},"llm-replay":{"path":"examples/text-ts/replay.jsonl"},"fs-local":{"workspace":"` + strings.ReplaceAll(workspace, `\`, `\\`) + `"}}}`
+	body := `{"name":"text-test","plugins":["../../plugins"],"enable":` + agentEnableJSON() + `,"disable":["llm-openai","session-jsonl"],"patch":{"agent-loop":{"model":"replay"},"llm-replay":{"path":"examples/text-ts/replay.jsonl"},"fs-local":{"workspace":"` + strings.ReplaceAll(workspace, `\`, `\\`) + `"}}}`
 	if err := os.WriteFile(preset, []byte(body), 0o644); err != nil {
 		t.Fatalf("写临时 preset 失败: %v", err)
 	}
@@ -933,7 +951,7 @@ func TestAgentMemoryScriptPlugin(t *testing.T) {
 	preset := f.Name()
 	_ = f.Close()
 	t.Cleanup(func() { _ = os.Remove(preset) })
-	body := `{"name":"memory-test","plugins":["../agent/plugins","../../plugins/tool/memory-helper"],"disable":["llm-openai","session-jsonl"],"patch":{"agent-loop":{"model":"replay"},"llm-replay":{"path":"examples/memory-ts/replay.jsonl"},"memory-helper":{"autoRecall":true},"fs-local":{"workspace":"` + strings.ReplaceAll(workspace, `\`, `\\`) + `"}}}`
+	body := `{"name":"memory-test","plugins":["../../plugins"],"enable":` + agentEnableJSON("memory-helper") + `,"disable":["llm-openai","session-jsonl"],"patch":{"agent-loop":{"model":"replay"},"llm-replay":{"path":"examples/memory-ts/replay.jsonl"},"memory-helper":{"autoRecall":true},"fs-local":{"workspace":"` + strings.ReplaceAll(workspace, `\`, `\\`) + `"}}}`
 	if err := os.WriteFile(preset, []byte(body), 0o644); err != nil {
 		t.Fatalf("写临时 preset 失败: %v", err)
 	}
@@ -981,7 +999,7 @@ func TestAgentToolHelper(t *testing.T) {
 	preset := f.Name()
 	_ = f.Close()
 	t.Cleanup(func() { _ = os.Remove(preset) })
-	body := `{"name":"tool-helper-test","plugins":["../agent/plugins","../../plugins/tool/text-helper"],"disable":["llm-openai","session-jsonl"],"patch":{"agent-loop":{"model":"replay"},"llm-replay":{"path":"examples/tool-helper/replay.jsonl"},"fs-local":{"workspace":"` + strings.ReplaceAll(workspace, `\`, `\\`) + `"}}}`
+	body := `{"name":"tool-helper-test","plugins":["../../plugins"],"enable":` + agentEnableJSON() + `,"disable":["llm-openai","session-jsonl"],"patch":{"agent-loop":{"model":"replay"},"llm-replay":{"path":"examples/tool-helper/replay.jsonl"},"fs-local":{"workspace":"` + strings.ReplaceAll(workspace, `\`, `\\`) + `"}}}`
 	if err := os.WriteFile(preset, []byte(body), 0o644); err != nil {
 		t.Fatalf("写临时 preset 失败: %v", err)
 	}

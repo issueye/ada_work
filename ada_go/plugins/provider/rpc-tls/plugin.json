@@ -1,0 +1,11 @@
+{
+  "id": "rpc-tls",
+  "name": "rpc-tls",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "rpc-transport"
+    ]
+  }
+}

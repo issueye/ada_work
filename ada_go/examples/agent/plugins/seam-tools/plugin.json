@@ -1,7 +1,0 @@
-{
-  "id": "seam-tools",
-  "name": "tools seam",
-  "version": "0.1.0",
-  "kind": "go",
-  "provide": ["tools"]
-}

@@ -24,10 +24,10 @@
 | C2 prompts seam + system-prompt | `plugins/seam/prompts`、`plugins/core/system-prompt` | `prompts` 3 个用例 | 引擎在 seam 内,未拆 provider;预算为字符估算 |
 | C3 llm seam + provider | `plugins/seam/llm`、`plugins/provider/llm-replay`/`llm-openai` | `replay` 2 个用例、`openai` wire/真实端点(可选) | OpenAI 兼容端点已实测;stream 改写结果未回传;无 deepseek 专用适配 |
 | C4 tools seam + 文件工具 | `plugins/seam/tools`、`plugins/tool/text-helper`(TS)、`platform/bridge`(`ada:fs`) | `tools` 2 个用例;`bridge.TestJSToolText`(读/写/编辑/搜索/列目录);`cli.TestAgentReplay` | 搜索仅字面量;编辑 read-before-edit;`ada:fs.search` 参数顺序已修正 |
-| C4b 脚本工具 | `examples/git-ts/plugins/git-helper`、`platform/bridge`(`ctx.tool`/`ada:shell`) | `cli.TestAgentGitScriptPlugin`;真实端点手工 | 无 SDK 类型;JS→原生 shell 无 ctx 取消 |
-| C4c 脚本持久化工具 | `examples/task-ts/plugins/task-helper`、`platform/bridge`(`ada:fs`) | `cli.TestUpTaskScriptPlugin`、`cli.TestAgentTaskScriptPlugin`;真实端点手工 | 任务文件不是会话事实;read-modify-write 无事务 |
-| C4d 脚本命令工具 | `examples/command-ts/plugins/command-helper`、`ada:shell` | `cli.TestUpCommandScriptPlugin`、`cli.TestAgentCommandScriptPlugin`;真实端点手工 | 白名单不是安全边界;无 shell 解析 |
-| C4e 脚本文本工具 | `examples/text-ts/plugins/text-helper`、`ada:fs` | `cli.TestUpTextScriptPlugin`、`cli.TestAgentTextScriptPlugin`;真实端点手工 | 搜索字面量/无正则;fs-local 路径约束 |
+| C4b 脚本工具 | `plugins/tool/git-helper`、`platform/bridge`(`ctx.tool`/`ada:shell`) | `cli.TestAgentGitScriptPlugin`;真实端点手工 | 无 SDK 类型;JS→原生 shell 无 ctx 取消 |
+| C4c 脚本持久化工具 | `plugins/tool/task-helper`、`platform/bridge`(`ada:fs`) | `cli.TestUpTaskScriptPlugin`、`cli.TestAgentTaskScriptPlugin`;真实端点手工 | 任务文件不是会话事实;read-modify-write 无事务 |
+| C4d 脚本命令工具 | `plugins/tool/command-helper`、`ada:shell` | `cli.TestUpCommandScriptPlugin`、`cli.TestAgentCommandScriptPlugin`;真实端点手工 | 白名单不是安全边界;无 shell 解析 |
+| C4e 脚本文本工具 | `plugins/tool/text-helper`、`ada:fs` | `cli.TestUpTextScriptPlugin`、`cli.TestAgentTextScriptPlugin`;真实端点手工 | 搜索字面量/无正则;fs-local 路径约束 |
 | C4f TS shell 工具 | `plugins/tool/shell-helper`(TS)、`platform/bridge`(`ada:shell.exec`/结构化工具结果)、`ada_jsrt/jsrt` | `bridge.TestJSToolResultMapping`、`TestJSShellExecStructured`、`cli.TestAgentToolShellScriptPlugin` | 仍是策略/沙箱之外的执行入口;发布安全边界见 tool-shell-helper.md |
 | C4g Node 内置模块 | `ada_jsrt/jsrt`、`ada_jsrt/jsrt/nodemods`、moejs `node` 包 | `bridge.TestNodeBuiltins`、`TestNodeChildProcess`、`TestNodeHTTPDNSNet`、`TestNodeHTTPError`、`TestNodeFSDisabledByPolicy` | `node:fs/path/os/events/util/assert/url/querystring/string_decoder/process/child_process/http/https/dns/net/buffer`;有 fs/workspace 策略时 `node:fs` 不可用;网络模块不做 `net-guard` 限制(ADR 0011/0012,已移除该策略);无 `createServer`/`listen` |
 | C4h HTTP 工具与 zlib | `plugins/tool/http-helper`(TS)、`ada_jsrt/jsrt/nodemods`(`node:zlib`)、`ada_jsrt/jsrt`+`platform/bridge`(`ada:secrets`) | `bridge.TestJSToolHTTPHelper`、`TestSearchDeepSeek`/`DuckDuckGo`/`SearXNG`、`bridge.TestNodeZlib` | 网络无 seam/caps/审批(ADR 0011/0012),默认不在发布 preset 启用;`node:zlib` 只做同步 gzip/deflate/raw,输出上限 8 MiB;`http_search` 的 DeepSeek key 只经 `ada:secrets` 按名读取 |

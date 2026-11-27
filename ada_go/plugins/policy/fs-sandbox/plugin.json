@@ -1,0 +1,15 @@
+{
+  "id": "fs-sandbox",
+  "name": "fs-sandbox",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "fs",
+      "sandbox"
+    ],
+    "optional": [
+      "approval"
+    ]
+  }
+}

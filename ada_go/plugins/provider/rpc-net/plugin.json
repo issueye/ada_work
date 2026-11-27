@@ -1,0 +1,11 @@
+{
+  "id": "rpc-net",
+  "name": "rpc-net",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "rpc-transport"
+    ]
+  }
+}

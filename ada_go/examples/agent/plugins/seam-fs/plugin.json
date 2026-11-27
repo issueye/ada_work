@@ -1,7 +1,0 @@
-{
-  "id": "seam-fs",
-  "name": "fs seam",
-  "version": "0.1.0",
-  "kind": "go",
-  "provide": ["fs"]
-}

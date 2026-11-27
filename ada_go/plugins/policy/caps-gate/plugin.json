@@ -1,0 +1,13 @@
+{
+  "id": "caps-gate",
+  "name": "caps-gate",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "optional": [
+      "caps",
+      "fs",
+      "shell"
+    ]
+  }
+}

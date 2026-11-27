@@ -1,7 +1,0 @@
-{
-  "id": "compaction-basic",
-  "name": "compaction basic",
-  "version": "0.1.0",
-  "kind": "go",
-  "config": {"keepRecent": 8}
-}

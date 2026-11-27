@@ -1,8 +1,37 @@
 {
   "name": "acp",
-  "plugins": ["plugins"],
+  "plugins": [
+    "../../plugins"
+  ],
+  "enable": [
+    "acp-helper",
+    "agent-control",
+    "agent-loop",
+    "llm-replay",
+    "plan",
+    "seam-acp",
+    "seam-approval",
+    "seam-llm",
+    "seam-prompts",
+    "seam-session",
+    "seam-tools",
+    "session-memory",
+    "tool-helper"
+  ],
   "patch": {
-    "llm-replay": {"path": "examples/acp/replay.jsonl"},
-    "agent-loop": {"model": "replay"}
+    "agent-loop": {
+      "model": "replay"
+    },
+    "llm-replay": {
+      "defaultModel": "replay",
+      "models": [
+        {
+          "contextWindow": 8192,
+          "id": "replay",
+          "maxOutput": 1024
+        }
+      ],
+      "path": "examples/acp/replay.jsonl"
+    }
   }
 }

@@ -13,9 +13,10 @@
 ## 2. 文件
 
 ```
+plugins/tool/task-helper/plugin.ts   TS 插件(内置插件目录)
+plugins/tool/task-helper/plugin.json kind=ts,inject: tools/fs
+
 examples/task-ts/
-  plugins/task-helper/plugin.ts     TS 插件
-  plugins/task-helper/plugin.json   kind=ts,inject: tools/fs
   task.preset.json                  agent 栈 + task-helper
   replay.jsonl                      回放:add → list
   workspace/                        任务文件目录(.ada/tasks.json)

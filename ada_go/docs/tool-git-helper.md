@@ -15,9 +15,9 @@ git 的实际执行由 `shell` seam 完成;命令白名单/沙箱/审批由 shel
 ## 2. 实现
 
 ```
-examples/git-ts/plugins/git-helper/plugin.ts   脚本插件本体
-examples/git-ts/plugins/git-helper/plugin.json 清单:kind=ts,inject tools/shell
-examples/git-ts/                           示例 preset + replay + shell-local + 脚本插件
+plugins/tool/git-helper/plugin.ts   脚本插件本体(内置插件目录)
+plugins/tool/git-helper/plugin.json 清单:kind=ts,inject tools/shell
+examples/git-ts/                    示例 preset + replay(插件清单统一在 plugins/ 下)
 ```
 
 宿主能力(类型与实现见 `ada_jsrt/jsrt`、`platform/bridge` 的文档注释):

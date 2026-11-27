@@ -1,0 +1,11 @@
+{
+  "id": "tool-helper",
+  "name": "tool-helper",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "tools"
+    ]
+  }
+}

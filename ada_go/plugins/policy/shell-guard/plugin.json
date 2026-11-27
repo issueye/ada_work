@@ -1,0 +1,16 @@
+{
+  "id": "shell-guard",
+  "name": "shell-guard",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "shell",
+      "sandbox"
+    ],
+    "optional": [
+      "caps",
+      "approval"
+    ]
+  }
+}

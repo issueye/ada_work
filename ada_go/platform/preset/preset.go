@@ -1,5 +1,5 @@
-// Package preset 是 M3 的组合数据层:一份 preset 声明「装哪些目录、哪些 disabled、
-// 每个插件的配置怎么覆盖」。
+// Package preset 是 M3 的组合数据层:一份 preset 声明「装哪些目录、装哪些插件
+// (enable)、哪些 disabled、每个插件的配置怎么覆盖」。
 //
 // 它是**数据不是代码**(AGENTS §2.2 的组合数据类):产品差异靠换 preset 表达,
 // 不允许在代码里写 `if product == "..."`。patch 只允许覆盖清单的 config,
@@ -34,6 +34,7 @@ func (e *Error) Error() string { return fmt.Sprintf("%s: %s", e.Code, e.Msg) }
 type Preset struct {
 	Name    string                    `json:"name"`
 	Plugins []string                  `json:"plugins"`
+	Enable  []string                  `json:"enable,omitempty"`
 	Disable []string                  `json:"disable,omitempty"`
 	Patch   map[string]map[string]any `json:"patch,omitempty"`
 
@@ -97,6 +98,19 @@ func (p *Preset) Validate() error {
 		}
 		seen[id] = true
 	}
+	// enable 是候选白名单:不在名单里的插件不进入装配。
+	// 同一个插件可以同时出现在 enable 与 disable:enable 表示「目录里收下它」,
+	// disable 表示「默认不启用」——宿主随后可以在运行期决定是否打开(如切换 LLM 供应商)。
+	enabled := map[string]bool{}
+	for _, id := range p.Enable {
+		if !namePattern.MatchString(id) {
+			return fail("enable 里的 id 不合法: %q", id)
+		}
+		if enabled[id] {
+			return fail("enable 重复声明了 %q", id)
+		}
+		enabled[id] = true
+	}
 	for id := range p.Patch {
 		if !namePattern.MatchString(id) {
 			return fail("patch 里的 id 不合法: %q", id)
@@ -105,9 +119,9 @@ func (p *Preset) Validate() error {
 	return nil
 }
 
-// Expand 加载 preset 引用的全部插件目录,并应用 disable 与 patch。
+// Expand 加载 preset 引用的全部插件目录,应用 enable 白名单、disable 与 patch。
 //
-// 未知的 disable/patch id 一律报错:静默忽略会让作者以为配置生效了。
+// 未知的 enable/disable/patch id 一律报错:静默忽略会让作者以为配置生效了。
 func (p *Preset) Expand() ([]*plugin.Manifest, error) {
 	var manifests []*plugin.Manifest
 	for _, dir := range p.Plugins {
@@ -128,6 +142,30 @@ func (p *Preset) Expand() ([]*plugin.Manifest, error) {
 			return nil, &Error{Code: CodePreset, Msg: fmt.Sprintf("插件 id %q 在多个目录里重复出现", m.ID)}
 		}
 		byID[m.ID] = m
+	}
+
+	// enable 是白名单:不在名单里的清单一律不进入装配,也不标记 Disabled——
+	// 标记会让 plan 输出几十条「已被 disabled」噪声,而这里表达的是「根本不在候选集」。
+	// 目录可以扫得很宽(整个内置插件目录),装配集合由 preset 显式收口。
+	if len(p.Enable) > 0 {
+		allow := make(map[string]bool, len(p.Enable))
+		for _, id := range p.Enable {
+			if _, ok := byID[id]; !ok {
+				return nil, &Error{Code: CodePreset, Msg: fmt.Sprintf("enable 指向不存在的插件 %q", id)}
+			}
+			allow[id] = true
+		}
+		kept := make([]*plugin.Manifest, 0, len(allow))
+		for _, m := range manifests {
+			if allow[m.ID] {
+				kept = append(kept, m)
+			}
+		}
+		manifests = kept
+		byID = make(map[string]*plugin.Manifest, len(kept))
+		for _, m := range kept {
+			byID[m.ID] = m
+		}
 	}
 
 	for _, id := range p.Disable {

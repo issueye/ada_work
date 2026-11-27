@@ -1,0 +1,10 @@
+{
+  "id": "seam-approval",
+  "name": "seam-approval",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {},
+  "provide": [
+    "approval"
+  ]
+}

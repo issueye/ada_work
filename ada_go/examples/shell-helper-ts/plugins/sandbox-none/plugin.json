@@ -1,8 +1,0 @@
-{
-  "id": "sandbox-none",
-  "name": "sandbox none",
-  "version": "0.1.0",
-  "kind": "go",
-  "inject": {"required": ["sandbox"]},
-  "config": {"mode": "workspace-write"}
-}

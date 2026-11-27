@@ -1,0 +1,11 @@
+{
+  "id": "fs-observe",
+  "name": "fs-observe",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "fs"
+    ]
+  }
+}

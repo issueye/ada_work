@@ -1488,6 +1488,11 @@ type Quota struct {
 
 ### 12.4 组合编排（Bundle / Profile / Patch）
 
+> 实现口径的 preset 字段(`name` / `plugins` / `enable` / `disable` / `patch`)见
+> [m3-assembly.md](m3-assembly.md) §4。`enable` 是**候选白名单**:目录可以指到统一的
+> `plugins/`,装配集合由 preset 收口;同一个 id 同时出现在 `enable` 与 `disable` 表示
+> 「收下但默认不启用」(宿主运行期可打开备选实现)。
+
 DSH 的分层：bundle 自带 `cordis.patch.yml`，profile 再叠 patch，用户能按 id 覆盖。v2 照搬结构，换名字：
 
 ```

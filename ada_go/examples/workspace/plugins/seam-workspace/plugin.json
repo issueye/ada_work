@@ -1,7 +1,0 @@
-{
-  "id": "seam-workspace",
-  "name": "workspace seam",
-  "version": "0.1.0",
-  "kind": "go",
-  "provide": ["workspace"]
-}

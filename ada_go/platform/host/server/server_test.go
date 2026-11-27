@@ -223,9 +223,10 @@ func TestAuth(t *testing.T) {
 }
 
 // 10. verify:合法插件返回清单信息;未知路径 400。
+// 根目录指向模块根(而不是 examples):插件清单已统一到 plugins/ 下。
 func TestVerify(t *testing.T) {
-	h := newHandler(t, "../../../examples")
-	rec := get(t, h, "/api/verify?path=git-ts/plugins/git-helper")
+	h := newHandler(t, "../../..")
+	rec := get(t, h, "/api/verify?path=plugins/tool/git-helper")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("verify 应 200,实际 %d: %s", rec.Code, rec.Body.String())
 	}

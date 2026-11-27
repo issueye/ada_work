@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 
 	"github.com/issueye/ada_go_v2/platform/assemble"
@@ -16,6 +15,7 @@ import (
 	"github.com/issueye/ada_go_v2/platform/host/registry"
 	"github.com/issueye/ada_go_v2/platform/host/server"
 	"github.com/issueye/ada_go_v2/platform/install"
+	"github.com/issueye/ada_go_v2/platform/plugin"
 )
 
 // checkResult 是 `ada check` 的结构化结果。
@@ -32,23 +32,19 @@ type checkResult struct {
 	Problems   []string `json:"problems,omitempty"`
 }
 
-// compileDir 逐个插件目录跑 VerifyDir(清单/摘要/TS 编译)。
+// compileDir 逐个插件跑 VerifyDir(清单/摘要/TS 编译)。
+//
+// 目录发现与 preset 走同一条规则(单插件目录 / 插件集合 / 一层分类目录),
+// 所以 `ada check plugins` 能一键校验整个内置插件目录。
 func compileDir(dir string) (int, string, error) {
-	entries, err := os.ReadDir(dir)
+	manifests, err := plugin.LoadDir(dir)
 	if err != nil {
 		return 0, "读取目录失败: " + err.Error(), err
 	}
 	count := 0
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		path := filepath.Join(dir, e.Name(), "plugin.json")
-		if _, err := os.Stat(path); err != nil {
-			continue
-		}
-		if _, err := install.VerifyDir(filepath.Join(dir, e.Name()), install.Options{}); err != nil {
-			return count, fmt.Sprintf("插件 %s 编译/校验失败: %v", e.Name(), err), err
+	for _, m := range manifests {
+		if _, err := install.VerifyDir(m.Dir, install.Options{}); err != nil {
+			return count, fmt.Sprintf("插件 %s 编译/校验失败: %v", m.ID, err), err
 		}
 		count++
 	}

@@ -57,7 +57,7 @@ platform/host/cli     verify / install / list 命令
 ## 5. CLI
 
 ```powershell
-go run ./cmd/ada verify examples/git-ts/plugins/git-helper
+go run ./cmd/ada verify plugins/tool/git-helper
 # 插件: git-helper@0.1.0(ts)
 # 摘要: sha256:...
 # 信任: third-party
@@ -150,7 +150,7 @@ go run ./cmd/ada repo <仓库索引 URL> [-keys 密钥文件] [-require-repo-sig
 
 ```powershell
 go test -race -count=1 ./install
-go run ./cmd/ada verify examples/git-ts/plugins/git-helper
+go run ./cmd/ada verify plugins/tool/git-helper
 go test -race -count=1 ./...
 pwsh scripts/guard.ps1
 ```

@@ -1,0 +1,10 @@
+{
+  "id": "seam-workspace",
+  "name": "seam-workspace",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {},
+  "provide": [
+    "workspace"
+  ]
+}

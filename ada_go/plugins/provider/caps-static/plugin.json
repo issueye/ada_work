@@ -1,0 +1,10 @@
+{
+  "id": "caps-static",
+  "name": "caps-static",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {},
+  "provide": [
+    "caps"
+  ]
+}

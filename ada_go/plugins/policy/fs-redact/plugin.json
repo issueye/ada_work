@@ -1,0 +1,11 @@
+{
+  "id": "fs-redact",
+  "name": "fs-redact",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "fs"
+    ]
+  }
+}

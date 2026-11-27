@@ -1,0 +1,11 @@
+{
+  "id": "system-prompt",
+  "name": "system-prompt",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "prompts"
+    ]
+  }
+}

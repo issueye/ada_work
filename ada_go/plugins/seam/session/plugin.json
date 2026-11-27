@@ -1,0 +1,10 @@
+{
+  "id": "seam-session",
+  "name": "seam-session",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {},
+  "provide": [
+    "session"
+  ]
+}

@@ -1,7 +1,0 @@
-{
-  "id": "seam-acp",
-  "name": "ACP client seam",
-  "version": "0.1.0",
-  "kind": "go",
-  "provide": ["acp"]
-}

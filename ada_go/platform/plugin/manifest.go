@@ -117,7 +117,13 @@ func Load(dir string) (*Manifest, error) {
 
 // LoadDir 扫描 root 下的插件目录(每个子目录一份 plugin.json),按 id 排序返回。
 //
-// 若 root 自身就有 plugin.json,则当作单插件目录处理。
+// 接受三种形态:
+//   - root 自身有 plugin.json:当作单插件目录;
+//   - root 的直接子目录各有 plugin.json:当作「插件目录集合」;
+//   - root 的直接子目录都没有清单(是分类目录,如 plugins/seam、plugins/provider):
+//     再下探一层,当作「分类目录集合」。
+//
+// 只下探一层:再深就不是插件目录而是目录树,容易把依赖或示例里的清单误装进来。
 //
 // 从磁盘加载的 TS 插件一律降为 third-party:清单里的 trust 是自述,
 // 真正的 trust 只能由安装来源(签名/仓库/内置注册表)给出。
@@ -130,6 +136,38 @@ func LoadDir(root string) ([]*Manifest, error) {
 		ApplySourceTrust(m)
 		return []*Manifest{m}, nil
 	}
+	ms, err := loadChildren(root)
+	if err != nil {
+		return nil, err
+	}
+	if len(ms) > 0 {
+		return ms, nil
+	}
+
+	// 分类目录:子目录自身不是插件目录,再下探一层。
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, &Error{Code: CodeIO, Msg: fmt.Sprintf("读取目录 %s 失败: %v", root, err)}
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		sub, err := loadChildren(filepath.Join(root, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		ms = append(ms, sub...)
+	}
+	if len(ms) == 0 {
+		return nil, &Error{Code: CodeIO, Msg: fmt.Sprintf("目录 %s 下没有找到任何 plugin.json", root)}
+	}
+	sort.Slice(ms, func(i, j int) bool { return ms[i].ID < ms[j].ID })
+	return ms, nil
+}
+
+// loadChildren 读取 root 的直接子目录里的插件清单(不递归)。
+func loadChildren(root string) ([]*Manifest, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, &Error{Code: CodeIO, Msg: fmt.Sprintf("读取目录 %s 失败: %v", root, err)}
@@ -149,9 +187,6 @@ func LoadDir(root string) ([]*Manifest, error) {
 		}
 		ApplySourceTrust(m)
 		out = append(out, m)
-	}
-	if len(out) == 0 {
-		return nil, &Error{Code: CodeIO, Msg: fmt.Sprintf("目录 %s 下没有找到任何 plugin.json", root)}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil

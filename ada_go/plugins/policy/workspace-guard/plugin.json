@@ -1,0 +1,11 @@
+{
+  "id": "workspace-guard",
+  "name": "workspace-guard",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "workspace"
+    ]
+  }
+}

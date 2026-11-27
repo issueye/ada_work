@@ -16,15 +16,23 @@ platform/              插件编排系统(作为一个整体)
   bridge/                                     执行层桥(compile/jsrt 在独立库 ada_jsrt)
   sched/ quota/ flow/ expr/                   编排层
   caps/ install/ version/                     授权、安装、版本
+  catalog/                                    内置插件清单导出(打包与源码清单同源)
   host/                CLI / server / desktop / registry / builtins
-plugins/               业务插件
-  seam/ provider/ policy/ core/ tool/
+plugins/               系统内置插件(唯一目录,清单与 builtins 注册表同源)
+  seam/ provider/ policy/ core/ tool/   每个目录一份 plugin.json
 cmd/                   入口(ada / ada-demo / ada-ts-demo)
-docs/ examples/ scripts/
+examples/              组合示例:preset 与数据(不再放插件清单)
+docs/ scripts/
 ```
 
 `platform/kernel` 不 import `plugins/`;`plugins/` 只能 import `platform/` 的 seam/内核契约;
 `platform/host/builtins` 是唯一反向依赖(内置插件注册表);`cmd/` 负责装配入口。
+
+**插件只有一处**:`plugins/<分类>/<目录>` 是内置插件的唯一目录——Go 插件的 `plugin.json` 由
+`go run ./scripts/tools/builtins-dump -source plugins` 从 `builtins.Plugins()` 生成(一致性测试
+`catalog.TestCatalogManifestsMatchRegistry` 守着),TS 插件源码与清单都在同一目录里。
+示例 preset 用 `plugins: ["../../plugins"]` 扫这个目录,再用 `enable` 收口到它需要的插件集合;
+发布打包从注册表重新导出扁平清单,不复制 `examples/` 下的手写文件。
 
 执行层的 `compile`(esbuild 降级)与 `jsrt`(moejs 宿主)已独立为同级库 **ada_jsrt**(模块 `github.com/issueye/ada_jsrt`);本仓库用 `go.mod` 的 `replace` 指向 `../ada_jsrt`,发布前需把该库发布到模块代理并删除 `replace`(CI 需先把该库 checkout 到同级目录,或按真实版本号拉取)。
 
@@ -168,14 +176,14 @@ go run ./cmd/ada agent --preset examples/workspace/workspace.preset.json --works
 go run ./cmd/ada agent --preset examples/workspace/real.preset.json --workspace docs -message "查询工作区并读取 a.txt" # 工作区真实端点(需 ADA_LLM_API_KEY)
 go run ./cmd/ada plan --preset examples/presets/base.preset.json   # M3:preset(disabled/patch)
 go run ./cmd/ada inspect --preset examples/git-ts/git.preset.json  # M3:诊断快照(fiber/服务/effect)
-go run ./cmd/ada verify examples/git-ts/plugins/git-helper  # M5:清单/摘要/验签/信任
+go run ./cmd/ada verify plugins/tool/git-helper  # M5:清单/摘要/验签/信任
 go run ./cmd/ada list -dest <安装根>                 # M5:本机安装索引
 go run ./cmd/ada uninstall <id> -dest <安装根>        # M5:卸载全部版本
 go run ./cmd/ada upgrade <目录> -dest <安装根>         # M5:升级并清理旧版本
 go run ./cmd/ada rollback <id> -dest <安装根>          # M5:回滚到上一版本
 go run ./cmd/ada update <id> -repo <仓库> -dest <安装根>  # M5:离线仓库更新
 go run ./cmd/ada caps examples/plugins -json          # M5:能力自检(caps/trust → Broker)
-go run ./cmd/ada check examples/text-ts/plugins      # M5:清单/计划/platform/caps/编译一键校验
+go run ./cmd/ada check plugins                     # M5:清单/计划/platform/caps/编译一键校验(整个内置插件目录)
 pwsh scripts/bench.ps1                       # 性能预算:≤20 μs/次、50 插件冷启动 ≤150 ms
 ```
 

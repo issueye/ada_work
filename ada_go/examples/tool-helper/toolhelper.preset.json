@@ -1,10 +1,70 @@
 {
   "name": "tool-helper",
-  "plugins": ["../agent/plugins", "../../plugins/tool/text-helper"],
-  "disable": ["llm-openai", "session-jsonl"],
+  "plugins": [
+    "../../plugins"
+  ],
+  "enable": [
+    "agent-loop",
+    "approval-gate",
+    "compaction-basic",
+    "fs-local",
+    "llm-openai",
+    "llm-replay",
+    "plan",
+    "seam-approval",
+    "seam-fs",
+    "seam-llm",
+    "seam-prompts",
+    "seam-session",
+    "seam-tools",
+    "session-jsonl",
+    "session-memory",
+    "session-stats",
+    "system-prompt",
+    "text-helper",
+    "tool-helper"
+  ],
+  "disable": [
+    "llm-openai",
+    "session-jsonl"
+  ],
   "patch": {
-    "agent-loop": {"model": "replay"},
-    "llm-replay": {"path": "examples/tool-helper/replay.jsonl"},
-    "fs-local": {"workspace": "examples/tool-helper/workspace"}
+    "agent-loop": {
+      "model": "replay"
+    },
+    "approval-gate": {
+      "timeoutMs": 20000,
+      "tools": []
+    },
+    "compaction-basic": {
+      "keepRecent": 8
+    },
+    "fs-local": {
+      "workspace": "examples/tool-helper/workspace"
+    },
+    "llm-openai": {
+      "apiKeyEnv": "ADA_LLM_API_KEY",
+      "endpoint": "http://127.0.0.1:3050/v1",
+      "maxTokens": 128,
+      "model": "mosi/nex-n2.6"
+    },
+    "llm-replay": {
+      "defaultModel": "replay",
+      "models": [
+        {
+          "contextWindow": 8192,
+          "id": "replay",
+          "maxOutput": 1024
+        }
+      ],
+      "path": "examples/tool-helper/replay.jsonl"
+    },
+    "system-prompt": {
+      "identity": "你是 ada 的最小测试 agent。",
+      "rules": [
+        "先读需要的文件,再总结。",
+        "工具失败时如实说明。"
+      ]
+    }
   }
 }

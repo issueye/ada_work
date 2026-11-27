@@ -127,11 +127,51 @@ func TestPresetValidation(t *testing.T) {
 		"空 plugins":  `{"name":"x","plugins":[]}`,
 		"disable 重复": `{"name":"x","plugins":["."],"disable":["a","a"]}`,
 		"未知字段":       `{"name":"x","plugins":["."],"disabled":["a"]}`,
+		"enable 重复":  `{"name":"x","plugins":["."],"enable":["a","a"]}`,
 	}
 	for name, body := range cases {
 		if _, err := preset.Parse([]byte(body), ""); err == nil {
 			t.Fatalf("%s: 应报错,实际通过: %s", name, body)
 		}
+	}
+}
+
+// 4.1 enable 是白名单:目录可以扫得很宽(一层分类目录),装配集合由 preset 收口。
+func TestExpandEnableAllowlist(t *testing.T) {
+	root := t.TempDir()
+	pluginsRoot := filepath.Join(root, "plugins")
+	writePlugin(t, filepath.Join(pluginsRoot, "core"), "alpha", "")
+	writePlugin(t, filepath.Join(pluginsRoot, "tool"), "beta", "")
+	writePlugin(t, filepath.Join(pluginsRoot, "provider"), "gamma", "")
+
+	presetPath := filepath.Join(root, "min.preset.json")
+	writePreset(t, presetPath, `{"name":"min","plugins":["./plugins"],"enable":["alpha","gamma"]}`)
+	p, err := preset.Load(presetPath)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	ms, err := p.Expand()
+	if err != nil {
+		t.Fatalf("展开失败: %v", err)
+	}
+	if len(ms) != 2 {
+		t.Fatalf("enable 应收口到 2 个插件,实际 %d(%+v)", len(ms), ms)
+	}
+	for _, m := range ms {
+		if m.ID == "beta" {
+			t.Fatalf("不在 enable 里的插件不应进入装配: %+v", m)
+		}
+	}
+
+	// enable 指向不存在的插件:必须报错,不能静默少装。
+	bad := filepath.Join(root, "bad.preset.json")
+	writePreset(t, bad, `{"name":"bad","plugins":["./plugins"],"enable":["missing"]}`)
+	p2, err := preset.Load(bad)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if _, err := p2.Expand(); err == nil || !strings.Contains(err.Error(), "enable 指向不存在") {
+		t.Fatalf("缺失的 enable 目标应报错,实际 %v", err)
 	}
 }
 

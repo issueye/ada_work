@@ -1,0 +1,12 @@
+{
+  "id": "acp-helper",
+  "name": "acp-helper",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "tools",
+      "acp"
+    ]
+  }
+}

@@ -95,6 +95,46 @@ func TestLoadDir(t *testing.T) {
 	}
 }
 
+// 3.1 分类目录集合:root 的直接子目录都不是插件目录时,下探一层找插件目录;
+// 只下探一层,再深就不认(避免把目录树/依赖里的清单误装进来)。
+func TestLoadDirCategoryLayout(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, id string) {
+		full := filepath.Join(root, rel)
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			t.Fatalf("建目录失败: %v", err)
+		}
+		src := `{"id":"` + id + `","version":"0.1.0","kind":"go"}`
+		if err := os.WriteFile(filepath.Join(full, "plugin.json"), []byte(src), 0o644); err != nil {
+			t.Fatalf("写清单失败: %v", err)
+		}
+	}
+	write("core/alpha", "alpha")
+	write("tool/beta", "beta")
+	write("provider/gamma", "gamma")
+
+	ms, err := plugin.LoadDir(root)
+	if err != nil {
+		t.Fatalf("分类目录应能下探一层: %v", err)
+	}
+	if len(ms) != 3 || ms[0].ID != "alpha" || ms[1].ID != "beta" || ms[2].ID != "gamma" {
+		t.Fatalf("分类目录扫描结果不符: %+v", ms)
+	}
+
+	// 两层分类(a/b/deep)超出下探范围,应视为没有插件目录。
+	deep := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(deep, "a", "b", "deep"), 0o755); err != nil {
+		t.Fatalf("建目录失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "a", "b", "deep", "plugin.json"),
+		[]byte(`{"id":"deep","version":"0.1.0","kind":"go"}`), 0o644); err != nil {
+		t.Fatalf("写清单失败: %v", err)
+	}
+	if _, err := plugin.LoadDir(deep); err == nil {
+		t.Fatalf("两层分类应报错(只允许多下探一层)")
+	}
+}
+
 // 能力与信任等级:非法能力名/信任等级在清单校验期拒绝。
 func TestCapsAndTrust(t *testing.T) {
 	valid := &plugin.Manifest{ID: "p", Version: "0.1.0", Kind: "go",

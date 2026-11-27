@@ -6,25 +6,26 @@
 
 ## 1. 为什么需要单独的打包脚本
 
-源码开发时,`examples/agent/plugins`、`examples/workspace/plugins` 是手写清单;
-发布二进制里的 Go 插件集合由 [`platform/host/builtins`](../platform/host/builtins/builtins.go) 决定。
-两者靠人手同步,必然出现「二进制里有插件、发布目录里没有清单」或「清单有、二进制没编译」的偏差。
+仓库里的内置插件只有一处:源码目录 **`plugins/<分类>/<目录>`**。
+Go 插件的 `plugin.json` 由 `builtins-dump -source plugins` 从 `builtins.Plugins()` 生成
+(`catalog.TestCatalogManifestsMatchRegistry` 守着,清单与注册表不可能靠手抄漂移);
+TS 插件的 `plugin.ts` 与 `plugin.json` 本来就在同一目录。
+发布包里的清单则从编译进宿主的注册表**重新导出**,不复制仓库里任何手写清单。
 
 `package.ps1` 的做法:
 
 1. 编译全部入口到 `dist/<name>/bin/`;
-2. 运行 `builtins-dump`,**从编译进宿主的 `builtins.Plugins()` 枚举所有 Go 插件**,
+2. 运行 `builtins-dump -out plugins`,**从编译进宿主的 `builtins.Plugins()` 枚举所有 Go 插件**,
    用 `kernel.Plugin` 的 `Provide()`/`Inject()` 自动生成 `plugins/<id>/plugin.json`;
-3. 复制 TS 插件源码与清单:
-   - 内置 `plugins/tool/text-helper`、`plugins/tool/shell-helper`、`plugins/tool/memory-helper`;
-   - `examples/<示例>/plugins/<id>` 下清单 `kind=ts` 的示例脚本插件
-     (`git-helper`、`task-helper`、`command-helper`),按清单自动发现,新增示例不需要改脚本;
-4. 生成只引用包内 `../plugins`、`workspace/`、`data/` 的 preset;示例插件不在 allowlist 里,随包但默认禁用;
+3. 从同一个 `plugins/` 目录按清单自动发现 `kind=ts` 的插件,复制源码与清单
+   (工具类 `text`/`shell`/`memory`/`http`/`plugin`/`skill`/`git`/`task`/`command-helper`
+   都在 `plugins/tool/`,新增 TS 插件不需要改打包脚本);
+4. 生成只引用包内 `../plugins`、`workspace/`、`data/` 的 preset;示例/工具插件不在 allowlist 里,随包但默认禁用;
 5. 用打包后的二进制执行 `ada plan` 与 `ada check plugins` 自检(同平台时);
 6. 打 zip。
 
-因此发布包的 Go 清单不会随 `examples/` 的手写文件漂移;示例脚本插件随包发布,
-启用时由包内 esbuild 现场编译,不需要开发目录。
+因此发布包与仓库只有一份插件来源:仓库里改插件目录,`-source` 重生成清单即可;
+发布包启用 TS 插件时由包内 esbuild 现场编译,不需要开发目录。
 
 ## 2. 用法
 
@@ -87,9 +88,9 @@ bin/ada.exe agent --preset presets/workspace-release.preset.json --workspace doc
 
 ## 4. preset 的 allowlist
 
-`plugins/` 包含 **48 个 Go 内置插件 + 3 个内置 TS 插件(`text-helper`、`shell-helper`、
-`memory-helper`)+ 3 个示例 TS 插件(`git-helper`、`task-helper`、`command-helper`)**,但发布
-preset 只启用栈内插件,其余全部写入 `disable`:
+`plugins/` 是唯一的插件目录,共 **52 个 Go 内置插件 + 9 个内置 TS 插件**
+(`text`/`shell`/`memory`/`http`/`plugin`/`skill`/`git`/`task`/`command-helper`);发布
+preset 只启用栈内插件,其余全部写入 `disable`(不在 allowlist 里的插件):
 
 - `agent-release`: agent-loop、session-memory/stats、system-prompt、seam-llm + llm-replay、
   seam-fs + fs-local、seam-tools、compaction-basic、text-helper(TS)、memory-helper(TS,

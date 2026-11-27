@@ -96,36 +96,22 @@ try {
         throw "导出内置插件清单失败(exit $LASTEXITCODE)"
     }
 
-    # TS 插件不在 builtins-dump 的导出范围,按目录复制源码与清单:
-    #   - plugins/tool 下的内置 TS 工具(text-helper/shell-helper);
-    #   - examples/<示例>/plugins/<id> 下 kind=ts 的示例脚本插件。
-    # 示例插件按清单自动发现,新增/改名示例时不需要改本脚本;它们默认不在 release
-    # preset 的 allowlist 里,因此随包发布但不启用,启用方式与其他未启用插件一致。
-    $tsPluginDirs = [ordered]@{
-        "text-helper"   = (Join-Path $root "plugins/tool/text-helper")
-        "shell-helper"  = (Join-Path $root "plugins/tool/shell-helper")
-        "memory-helper" = (Join-Path $root "plugins/tool/memory-helper")
-        # http-helper 是联网工具:默认随 agent-release 启用;不想给模型网络能力时
-        # 在 preset 的 disable 里加回它(见 docs/tool-http-helper.md)。
-        "http-helper"   = (Join-Path $root "plugins/tool/http-helper")
-        # plugin-helper / skill-helper 是开发工具(插件生成、技能读写),随发布 preset 默认启用。
-        "plugin-helper" = (Join-Path $root "plugins/tool/plugin-helper")
-        "skill-helper"  = (Join-Path $root "plugins/tool/skill-helper")
-    }
-    $examplesRoot = Join-Path $root "examples"
-    foreach ($mf in @(Get-ChildItem $examplesRoot -Recurse -Filter "plugin.json" -File)) {
-        $rel = $mf.FullName.Substring($examplesRoot.Length + 1).Replace("\", "/")
-        # 只收 examples/<示例>/plugins/<id>/plugin.json;examples 其它层级的清单是开发用
-        # Go 示例清单,已由 builtins-dump 导出,重复复制会覆盖自动生成的同名清单。
-        if ($rel -notmatch "^[^/]+/plugins/[^/]+/plugin.json$") { continue }
+    # TS 插件不在 builtins-dump 的导出范围,从统一的插件目录(plugins/<分类>/<目录>)
+    # 按清单自动发现 kind=ts 的插件,连同源码与清单一起复制。
+    # 新增/改名 TS 插件时不需要改本脚本;它们默认不在 release preset 的 allowlist 里,
+    # 因此随包发布但不启用,启用方式与其他未启用插件一致。
+    $sourcePlugins = Join-Path $root "plugins"
+    $tsPluginDirs = [ordered]@{}
+    foreach ($mf in @(Get-ChildItem $sourcePlugins -Recurse -Filter "plugin.json" -File)) {
+        $rel = $mf.FullName.Substring($sourcePlugins.Length + 1).Replace("\", "/")
         $manifest = Get-Content $mf.FullName -Raw | ConvertFrom-Json
         if ($manifest.kind -ne "ts") { continue }
         $id = Split-Path -Leaf $mf.DirectoryName
         if ($manifest.id -ne $id) {
-            throw "示例插件 examples/$rel 的 id($($manifest.id))与目录名($id)不一致"
+            throw "TS 插件 plugins/$rel 的 id($($manifest.id))与目录名($id)不一致"
         }
         if ($tsPluginDirs.Contains($id)) {
-            throw "TS 插件 id 重复: $id($rel)"
+            throw "TS 插件 id 重复: $id(plugins/$rel)"
         }
         $tsPluginDirs[$id] = $mf.DirectoryName
     }

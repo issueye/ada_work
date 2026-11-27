@@ -62,7 +62,7 @@
 - 不是「先做成单体，以后再拆」。拆分的成本在第一天最低；之后再拆就是重写。
 - 不是 DSH 的克隆。我们借它的**作用域语义与 seam 划分**，但不复制它的包结构、不引入 Node。
 
-**目录结构**：`platform/` 是插件编排系统(kernel/assemble/plugin/loader/preset/bundle/caps/bridge/sched/quota/flow/expr/version/install/host);执行层的 `compile`/`jsrt` 已独立为同级库 **ada_jsrt**(模块 `github.com/issueye/ada_jsrt`,本仓库用 `replace` 指向 `../ada_jsrt`);`plugins/` 是业务插件(seam/provider/policy/core/tool);`cmd/` 是入口;`docs/`、`examples/`、`scripts/` 是配套。
+**目录结构**：`platform/` 是插件编排系统(kernel/assemble/plugin/loader/preset/bundle/caps/catalog/bridge/sched/quota/flow/expr/version/install/host);执行层的 `compile`/`jsrt` 已独立为同级库 **ada_jsrt**(模块 `github.com/issueye/ada_jsrt`,本仓库用 `replace` 指向 `../ada_jsrt`);`plugins/` 是**系统内置插件的唯一目录**(seam/provider/policy/core/tool,每个目录带与 `builtins.Plugins()` 同源的 `plugin.json`;新增插件必须放这里,一致性测试会拒绝只有代码没有清单、或清单与注册表不一致的目录);`examples/` 只放组合示例(preset 与数据);`cmd/` 是入口;`docs/`、`scripts/` 是配套。
 
 **当前产物**（全部在 `docs/`）：
 
@@ -160,7 +160,7 @@
 | 类别 | 内容 | 判据 |
 |---|---|---|
 | **内核** | Context / Fiber / Service / Effect / Event / Config / Registry / Provider 接口 | 只懂「作用域、服务、副作用、事件、配置」，不懂业务 |
-| **基础设施** | assemble / bridge / compile+jsrt(独立库 `ada_jsrt`,esbuild+moejs) / plugin(清单/安装/签名) / caps(授权) / observe / redact(脱敏正则) | 是「装载与执行机制」，没有领域语义 |
+| **基础设施** | assemble / bridge / compile+jsrt(独立库 `ada_jsrt`,esbuild+moejs) / plugin(清单/安装/签名) / catalog(内置插件清单导出) / caps(授权) / observe / redact(脱敏正则) | 是「装载与执行机制」，没有领域语义 |
 | **组合数据** | preset / bundle / patch | 是数据不是代码 |
 | **宿主适配器** | `platform/host/desktop`（mygo）、`platform/host/cli`、`platform/host/server` | 只做平台映射（窗口、协议、主线程、进程入口），不做业务 |
 
@@ -276,7 +276,7 @@ platform/host/*   ✓→ 全部
 - **内置工具插件一律用 `<xx>-helper` 命名**：目录 `plugins/tool/<xx>-helper`，id 与目录同名，如 `text-helper`、`shell-helper`、`git-helper`。`<xx>` 是工具面向的领域（`text`/`shell`/`git`/`task`/`command`/`workspace`），不是实现方式。
   - 为什么：`helper` 直接表明「这是一组给模型用的工具」，与 seam（契约）、provider（实现）、policy（门禁）的命名区分开；`tool-fs` 这类前缀与目录 `plugins/tool/` 重复，`fs`/`shell` 裸名又会和 `fs-local`/`shell-local` 这类 provider 撞语义。
   - 适用范围：仅 `plugins/tool/*`。seam/provider/policy/core 继续用原来的 `seam-`/`provider-`/`policy-`/`core-` 及实现名（`fs-local`、`shell-guard`），不套用本规则。
-  - 现状：`text-helper`、`shell-helper`、`workspace-helper` 以及示例里的 `git-helper`/`task-helper`/`command-helper` 均已符合本规则；新增插件不再允许例外。
+  - 现状：`text-helper`、`shell-helper`、`workspace-helper`、`git-helper`/`task-helper`/`command-helper` 全部在 `plugins/tool/` 下，均符合本规则；新增插件不再允许例外，也不允许再放进 `examples/`（示例只放 preset 与数据）。
 - 服务名：小写单数（`llm`、`tools`、`session`、`prompts`）。
 - 事件名：`域/动词`，全小写，如 `turn/before`、`tools/pre-execute`、`fs/observe`；**新增事件必须写进对应契约文档**。
   - 两个命名空间不得混用：**总线事件**用服务复数（`tools/*`、`llm/*`），**会话事件类型**用单数（`tool/result`、`assistant/message`），见 `seam-api.md` §1.7。

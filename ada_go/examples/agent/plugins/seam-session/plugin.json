@@ -1,7 +1,0 @@
-{
-  "id": "seam-session",
-  "name": "session seam",
-  "version": "0.1.0",
-  "kind": "go",
-  "provide": ["session"]
-}

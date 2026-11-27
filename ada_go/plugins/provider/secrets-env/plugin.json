@@ -1,0 +1,11 @@
+{
+  "id": "secrets-env",
+  "name": "secrets-env",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "secrets"
+    ]
+  }
+}

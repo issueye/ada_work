@@ -1,0 +1,14 @@
+{
+  "id": "llm-openai",
+  "name": "llm-openai",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "llm"
+    ],
+    "optional": [
+      "secrets"
+    ]
+  }
+}

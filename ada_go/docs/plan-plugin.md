@@ -70,7 +70,7 @@ system 消息插到「最后一条 user 消息之前」：
 ## 5. 接入方式
 
 - `plan` 已注册为 builtin；
-- preset 里显式启用（例如 `examples/acp/plugins/plan`）；
+- preset 里显式启用（`plugins/core/plan`，或 preset 的 `enable` 里写上 `plan`）；
 - 与 ACP 一起用时，`ada acp` 不需要额外配置：计划事件经 control 层进入
   `session/update`；
 - TS 插件可 `import { get, set, update } from "ada:plan"` 读写当前会话计划，

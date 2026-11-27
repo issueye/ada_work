@@ -1,0 +1,14 @@
+{
+  "id": "fs-local",
+  "name": "fs-local",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "fs"
+    ],
+    "optional": [
+      "workspace"
+    ]
+  }
+}

@@ -14,11 +14,12 @@
 ## 2. 文件
 
 ```
+plugins/tool/command-helper/plugin.ts   TS 插件(内置插件目录)
+plugins/tool/command-helper/plugin.json kind=ts,inject: tools/shell, config.allow
+plugins/seam/shell/                     shell seam
+plugins/provider/shell-local/           workspace=仓库根
+
 examples/command-ts/
-  plugins/command-helper/plugin.ts     TS 插件
-  plugins/command-helper/plugin.json   kind=ts,inject: tools/shell, config.allow
-  plugins/seam-shell/                  shell seam
-  plugins/shell-local/                 workspace=仓库根
   command.preset.json                  agent 栈 + command-helper
   replay.jsonl                         git --version 回放
 ```

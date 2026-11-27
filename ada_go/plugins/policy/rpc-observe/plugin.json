@@ -1,0 +1,11 @@
+{
+  "id": "rpc-observe",
+  "name": "rpc-observe",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "rpc"
+    ]
+  }
+}

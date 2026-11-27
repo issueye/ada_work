@@ -1,0 +1,11 @@
+{
+  "id": "approval-cli",
+  "name": "approval-cli",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {
+    "required": [
+      "approval"
+    ]
+  }
+}

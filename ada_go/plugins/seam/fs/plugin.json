@@ -1,0 +1,10 @@
+{
+  "id": "seam-fs",
+  "name": "seam-fs",
+  "version": "0.1.0",
+  "kind": "go",
+  "inject": {},
+  "provide": [
+    "fs"
+  ]
+}
