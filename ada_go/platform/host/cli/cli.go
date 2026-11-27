@@ -508,10 +508,16 @@ func cmdACP(args []string, in io.Reader, out, errOut io.Writer) int {
 		usage(errOut)
 		return 2
 	}
+	// 先记下启动时的工作目录:loadTarget 会把进程切到装配基目录,
+	// 而 ACP 的工作区根要的是宿主启动 agent 时所在的目录(用户项目目录)。
+	cwd, cwdErr := os.Getwd()
 	manifests, err := loadTarget(t)
 	if err != nil {
 		fmt.Fprintln(errOut, "加载失败:", err)
 		return 1
+	}
+	if cwdErr == nil {
+		bindWorkspaceToCwd(manifests, cwd)
 	}
 	report := assemble.Plan(manifests)
 	if !report.OK() {
@@ -532,6 +538,49 @@ func cmdACP(args []string, in io.Reader, out, errOut io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// bindWorkspaceToCwd 把 ACP 会话的工作区根绑到 agent 进程的 cwd。
+//
+// ACP 是客户端驱动的:客户端(ada_chat、编辑器)把 agent 启动在用户项目目录里,
+// session/new 的 cwd 也是同一个目录。preset 里写死的 workspace/ 只适合示例;
+// 不覆盖时 agent 会读写发布包自己的 workspace/,而不是用户的项目。
+// RPC 宿主(ada-rpc-agent)对同一语义有自己的补丁,这里只服务 ACP。
+func bindWorkspaceToCwd(manifests []*plugin.Manifest, cwd string) {
+	if cwd == "" {
+		return
+	}
+	managed := false
+	for _, m := range manifests {
+		if m.ID == "workspace-local" && !m.Disabled {
+			managed = true
+		}
+	}
+	for _, m := range manifests {
+		switch m.ID {
+		case "fs-local":
+			setManifestConfig(m, "workspace", cwd)
+			setManifestConfig(m, "tmp", filepath.Join(cwd, ".ada-tmp"))
+		case "shell-local":
+			// 有 workspace 服务时根由链解析,不覆盖;独立模式才落到 cwd。
+			if managed {
+				continue
+			}
+			setManifestConfig(m, "workspace", cwd)
+			setManifestConfig(m, "tmp", filepath.Join(cwd, ".ada-tmp"))
+		}
+	}
+}
+
+// setManifestConfig 写入清单配置(Config 可能为 nil)。
+func setManifestConfig(m *plugin.Manifest, key string, value any) {
+	if m == nil {
+		return
+	}
+	if m.Config == nil {
+		m.Config = map[string]any{}
+	}
+	m.Config[key] = value
 }
 
 func cmdInspect(args []string, out, errOut io.Writer) int {
