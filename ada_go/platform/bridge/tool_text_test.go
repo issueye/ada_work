@@ -86,6 +86,17 @@ func TestJSToolText(t *testing.T) {
 		t.Fatalf("list_dir 失败: %+v", res)
 	}
 
+	// 空结果必须是空数组而不是 null:TS 侧直接读 length,遇到 null 会抛 TypeError。
+	if res := call("search_files", map[string]any{"query": "没有这段文字-zzz"}); res.Status != tools.StatusOK || !strings.Contains(res.Content[0].Text, "(无匹配)") {
+		t.Fatalf("空搜索结果应返回 (无匹配): %+v", res)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if res := call("list_dir", map[string]any{"path": "/workspace/empty"}); res.Status != tools.StatusOK || !strings.Contains(res.Content[0].Text, "(空目录)") {
+		t.Fatalf("空目录应返回 (空目录): %+v", res)
+	}
+
 	data, err := os.ReadFile(filepath.Join(dir, "a.txt"))
 	if err != nil || string(data) != "hello ada" {
 		t.Fatalf("文件内容不正确: %v %q", err, data)

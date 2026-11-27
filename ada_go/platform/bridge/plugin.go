@@ -529,7 +529,13 @@ export function list(prefix) { return host.store.list(String(prefix || "")); }
 				if err != nil {
 					return "", err
 				}
-				b, err := json.Marshal(res.Matches)
+				// 空结果必须是 [] 而不是 null:TS 侧直接读 matches.length,
+				// JSON null 会变成 null 并抛 TypeError(用户侧表现为「工具没有跑完」)。
+				matches := res.Matches
+				if matches == nil {
+					matches = []seamfs.SearchMatch{}
+				}
+				b, err := json.Marshal(matches)
 				if err != nil {
 					return "", err
 				}
@@ -549,6 +555,10 @@ export function list(prefix) { return host.store.list(String(prefix || "")); }
 				entries, err := impl.List(fctx, seamfs.ListRequest{Path: seamfs.Path(path), Recursive: recursive, Limit: limit})
 				if err != nil {
 					return "", err
+				}
+				// 空目录同理:给 TS 一个 [] 而不是 null。
+				if entries == nil {
+					entries = []seamfs.DirEntry{}
 				}
 				b, err := json.Marshal(entries)
 				if err != nil {
