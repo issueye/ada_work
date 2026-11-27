@@ -60,6 +60,7 @@ dist/ada-<version>-<goos>-<goarch>/
   presets/
     agent-release.preset.json
     workspace-release.preset.json
+    acp-release.preset.json
     agent-real-release.preset.json   # 仅当给了 LLMEndpoint/LLMModel
   data/
     agent-replay.jsonl
@@ -80,6 +81,9 @@ bin/ada.exe plan  --preset presets/agent-release.preset.json
 bin/ada.exe agent --preset presets/agent-release.preset.json -message "读取 a.txt 并总结"
 bin/ada.exe agent --preset presets/workspace-release.preset.json --workspace docs -message "查询工作区并读取 a.txt"
 ```
+
+`acp-release` 在 `agent-release` 基础上额外启用 `agent-control` / `seam-acp` / `seam-approval`,
+用于 `ada acp --preset presets/acp-release.preset.json`(ACP 模式;`ada acp` 需要 `agent-control` 提供 control 服务)。
 
 ## 4. preset 的 allowlist
 
@@ -105,6 +109,7 @@ preset 只启用栈内插件,其余全部写入 `disable`:
 ```powershell
 bin/ada plan  --preset presets/agent-release.preset.json
 bin/ada plan  --preset presets/workspace-release.preset.json
+bin/ada plan  --preset presets/acp-release.preset.json
 bin/ada check plugins
 ```
 

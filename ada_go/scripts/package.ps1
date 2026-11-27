@@ -263,6 +263,21 @@ try {
         (($httpPreset | ConvertTo-Json -Depth 10) + "`n"), $utf8)
     [System.IO.File]::WriteAllText((Join-Path $presetsDir "workspace-release.preset.json"),
         (($workspacePreset | ConvertTo-Json -Depth 10) + "`n"), $utf8)
+    # acp-release:在 agent-release 基础上额外启用 agent-control / seam-acp / seam-approval,
+    # 让 `ada acp` 的 ACP 控制层(control 服务 / 编辑器能力 / 审批路由)可用;否则报"没有 control 服务"。
+    $acpAllow = $agentAllow + @("agent-control", "seam-acp", "seam-approval")
+    $missingAcp = @($acpAllow | Where-Object { $_ -notin $ids })
+    if ($missingAcp.Count -gt 0) {
+        throw "acp allowlist 引用了不存在的插件: $($missingAcp -join ', ')"
+    }
+    $acpPreset = [ordered]@{
+        name = "acp-release"
+        plugins = @("../plugins")
+        disable = @($ids | Where-Object { $_ -notin $acpAllow })
+        patch = $agentPatch
+    }
+    [System.IO.File]::WriteAllText((Join-Path $presetsDir "acp-release.preset.json"),
+        (($acpPreset | ConvertTo-Json -Depth 10) + "`n"), $utf8)
 
     if ($LLMEndpoint -and $LLMModel) {
         $realAllow = @($agentAllow | Where-Object { $_ -ne "llm-replay" }) + @("llm-openai")
@@ -326,7 +341,7 @@ presets/ 只引用 ../plugins、workspace/ 与 data/,不包含开发目录路径
         $ada = Join-Path $binDir ("ada" + $ext)
         Push-Location $pkg
         try {
-            foreach ($name in @("agent-release.preset.json", "agent-release-http.preset.json", "workspace-release.preset.json")) {
+            foreach ($name in @("agent-release.preset.json", "agent-release-http.preset.json", "workspace-release.preset.json", "acp-release.preset.json")) {
                 & $ada plan --preset (Join-Path "presets" $name) | Out-Null
                 if ($LASTEXITCODE -ne 0) {
                     throw "包内 plan 自检失败: $name"
