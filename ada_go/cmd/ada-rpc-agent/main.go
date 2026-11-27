@@ -31,7 +31,6 @@ import (
 	agentloop "github.com/issueye/ada_go_v2/plugins/core/agent-loop"
 	rpcguard "github.com/issueye/ada_go_v2/plugins/policy/rpc-guard"
 	rpcobserve "github.com/issueye/ada_go_v2/plugins/policy/rpc-observe"
-	openai "github.com/issueye/ada_go_v2/plugins/provider/llm-openai"
 	rpcjson "github.com/issueye/ada_go_v2/plugins/provider/rpc-json"
 	rpcnet "github.com/issueye/ada_go_v2/plugins/provider/rpc-net"
 	rpcpipe "github.com/issueye/ada_go_v2/plugins/provider/rpc-pipe"
@@ -56,7 +55,7 @@ const (
 	envLLMProvider = "ADA_LLM_PROVIDER"
 	envLLMEndpoint = "ADA_LLM_ENDPOINT"
 	envLLMModel    = "ADA_LLM_MODEL"
-	envLLMAPIKey   = "ADA_LLM_API_KEY"
+	envLLMAPIKey   = builtins.DefaultAPIKeyEnv
 )
 
 func main() {
@@ -718,11 +717,8 @@ func blockText(blocks []seamllm.Block, limit int) string {
 	return out
 }
 
-type llmOverride struct {
-	Provider string
-	Endpoint string
-	Model    string
-}
+// llmOverride 是 builtins.ProviderOverride 的别名:保留旧名字让测试与调用点读起来不变。
+type llmOverride = builtins.ProviderOverride
 
 func loadManifests(presetPath, workspace, name, instruction string, ov llmOverride) ([]*plugin.Manifest, error) {
 	p, err := preset.Load(presetPath)
@@ -749,7 +745,7 @@ func loadManifests(presetPath, workspace, name, instruction string, ov llmOverri
 			setConfig(m, "identity", identityFor(name, instruction))
 		}
 	}
-	if err := applyLLMOverride(manifests, ov); err != nil {
+	if err := builtins.ApplyProviderOverride(manifests, ov); err != nil {
 		return nil, err
 	}
 	return manifests, nil
@@ -765,52 +761,6 @@ func identityFor(name, instruction string) string {
 		out += "\n" + ins
 	}
 	return out
-}
-
-// applyLLMOverride lets the desktop host choose the provider without editing
-// the preset: it enables one LLM provider, disables the other, and points
-// agent-loop at the chosen model.
-func applyLLMOverride(manifests []*plugin.Manifest, ov llmOverride) error {
-	provider := strings.ToLower(strings.TrimSpace(ov.Provider))
-	if provider == "" {
-		return nil
-	}
-	openaiM := findManifest(manifests, "llm-openai")
-	replayM := findManifest(manifests, "llm-replay")
-	switch provider {
-	case "openai":
-		if openaiM == nil {
-			return fmt.Errorf("agent preset 不包含 llm-openai")
-		}
-		openaiM.Disabled = false
-		if replayM != nil {
-			replayM.Disabled = true
-		}
-		endpoint := strings.TrimSpace(ov.Endpoint)
-		if endpoint == "" {
-			endpoint = openai.DefaultEndpoint
-		}
-		model := strings.TrimSpace(ov.Model)
-		if model == "" {
-			model = openai.DefaultModel
-		}
-		setConfig(openaiM, "endpoint", endpoint)
-		setConfig(openaiM, "model", model)
-		setConfig(openaiM, "apiKeyEnv", envLLMAPIKey)
-		setAgentModel(manifests, model)
-	case "replay":
-		if replayM == nil {
-			return fmt.Errorf("agent preset 不包含 llm-replay")
-		}
-		replayM.Disabled = false
-		if openaiM != nil {
-			openaiM.Disabled = true
-		}
-		setAgentModel(manifests, replayModel(replayM))
-	default:
-		return fmt.Errorf("未知的 LLM provider: %s", provider)
-	}
-	return nil
 }
 
 func findManifest(manifests []*plugin.Manifest, id string) *plugin.Manifest {

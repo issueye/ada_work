@@ -519,6 +519,12 @@ func cmdACP(args []string, in io.Reader, out, errOut io.Writer) int {
 	if cwdErr == nil {
 		bindWorkspaceToCwd(manifests, cwd)
 	}
+	// 宿主的供应商选择(ada_chat 的模型设置)在 ACP 模式下也生效:
+	// 不读这套环境变量时,acp-release 的 llm-replay 会一直用回放脚本作答。
+	if err := builtins.ApplyProviderOverride(manifests, builtins.ProviderOverrideFromEnv(os.Getenv)); err != nil {
+		fmt.Fprintln(errOut, "供应商覆盖失败:", err)
+		return 1
+	}
 	report := assemble.Plan(manifests)
 	if !report.OK() {
 		for _, p := range report.Problems {

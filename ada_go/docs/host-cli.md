@@ -63,6 +63,9 @@ cmd/ada/     只做 os.Exit(cli.Run(os.Args[1:], os.Stdout, os.Stderr))
 7. **`ada acp` 以进程 cwd 为工作区根**:ACP 是客户端驱动的,宿主把 agent 启动在用户项目目录里;装配前会把
    `fs-local.workspace`、`shell-local.workspace` 与两者的 `tmp` 绑到该目录(有 `workspace` 服务时 shell 根仍由链解析),
    这样模型读写的是用户项目,而不是发布包自带的 `workspace/`。
+8. **`ada acp` 认宿主的供应商环境变量**:`ADA_LLM_PROVIDER` / `ADA_LLM_ENDPOINT` / `ADA_LLM_MODEL`
+   (与 `ada-rpc-agent` 同一套,实现见 `platform/host/builtins.ApplyProviderOverride`)在 ACP 装配前生效,
+   启停 `llm-openai`/`llm-replay` 并把 `agent-loop` 指到所选模型;不设则跟随 preset(发布 preset 默认回放)。
 
 ## 5. 下一步
 
