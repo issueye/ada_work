@@ -147,24 +147,43 @@ func (s *Scheduler) runJob(ctx context.Context, id string, handler func(context.
 
 // runJobAt 先抢租约再执行;成功/失败都推进 lastRun(避免失败后无限重跑)。
 func (s *Scheduler) runJobAt(ctx context.Context, id string, handler func(context.Context) error, store JobStore, at time.Time) {
-	// 已经跑过这个触发点(另一个实例刚写过 lastRun)→ 跳过,避免同一周期重复执行。
-	if last, ok, err := store.LastRun(ctx, id); err == nil && ok && !last.Before(at) {
+	// 先看 lastRun:已经跑过这个触发点(另一个实例刚写过)→ 跳过,避免同一周期重复执行。
+	if triggerDone(ctx, store, id, at) {
 		return
 	}
 	now := s.clock.Now()
-	ok, err := store.AcquireLease(ctx, id, now, JobLease)
+	held, err := store.AcquireLease(ctx, id, now, JobLease)
 	if err != nil {
 		s.logf("sched: job %q 获取租约失败: %v", id, err)
 		return
 	}
-	if !ok {
+	if !held {
 		s.logf("sched: job %q 的租约被其它实例持有,跳过本次", id)
+		return
+	}
+	// 抢到租约后再确认一次:上面的「读 lastRun」与「抢租约」不是原子的,另一个实例
+	// 可能正好在这两步之间跑完并写了 lastRun;此时放弃本次,并把刚拿到的租约清掉,
+	// 否则下一次合法触发会被这段空租约挡住。
+	if triggerDone(ctx, store, id, at) {
+		// 用同一个 lastRun 再写一次:SetLastRun 会清空租约,值不变即幂等。
+		last, ok, lerr := store.LastRun(ctx, id)
+		if lerr == nil && ok {
+			if err := store.SetLastRun(ctx, id, last); err != nil {
+				s.logf("sched: job %q 释放空租约失败: %v", id, err)
+			}
+		}
 		return
 	}
 	s.run("job:"+id, ctx, handler) // run 内部 recover + 日志;失败也推进 lastRun。
 	if err := store.SetLastRun(ctx, id, at); err != nil {
 		s.logf("sched: job %q 写入 lastRun 失败: %v", id, err)
 	}
+}
+
+// triggerDone 报告这个触发点是否已经执行过:lastRun >= at 即视为完成。
+func triggerDone(ctx context.Context, store JobStore, id string, at time.Time) bool {
+	last, ok, err := store.LastRun(ctx, id)
+	return err == nil && ok && !last.Before(at)
 }
 
 // JobState 是内存存储里单个任务的状态。

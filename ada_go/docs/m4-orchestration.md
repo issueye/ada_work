@@ -76,6 +76,10 @@ RealClock / FakeClock ──▶ Scheduler
 
 - 补跑发生在任务启动时(停机/重启后),之后按 cron 正常触发;
 - `SetLastRun` 同时释放租约;成功与失败都推进 lastRun(避免失败后无限重跑);
+- **防重是「先查 lastRun、再抢租约、再查一次」**:读 lastRun 与抢租约不是原子的,抢到租约后要
+  再确认一次该触发点没被执行过(另一个实例可能刚跑完);确认已执行就放弃本次并用
+  `SetLastRun(原值)` 把空租约释放掉,否则下一次合法触发会被这段空租约挡住。
+  只查一次时同一触发点在两个实例上可能各跑一次(`TestJobsSharedStoreRunsOnce` 曾间歇失败);
 - `MemoryJobStore`(测试/最小宿主)与 `FileJobStore`(JSON 文件 + 原子写 + `O_CREATE|O_EXCL` 锁文件)两种实现;文件存储跨实例共享状态,**并发抢租约只会有 1 个成功**,过期锁(超过 JobLease 的 mtime)自动回收。
 
 ## 6. 测试矩阵
