@@ -48,13 +48,47 @@ description: 需要拆分/合并/抽取 PDF 时使用
 {
   "plugins": ["plugins", "../../plugins/tool/skill-helper"],
   "patch": {
-    "skill-helper": { "roots": ["skills", ".ada/skills"] }
+    "skill-helper": {
+      "roots": ["skills", ".ada/skills"],
+      "autoInject": true,
+      "maxIndexSkills": 50,
+      "maxDescRune": 80,
+      "maxIndexBytes": 4096
+    }
   }
 }
 ```
 
 `roots` 是**虚拟路径**（相对路径自动挂到 `/workspace`），缺省为
 `["/workspace/skills", "/workspace/.ada/skills"]`。
+
+`autoInject`（默认 `false`）打开后，技能清单会**随每次模型请求自动注入**一条 system 消息；
+其余三个键限制注入体积：最多列 `maxIndexSkills` 个技能、每条描述截到 `maxDescRune` 字符、
+整段最多 `maxIndexBytes`（超出部分截断并提示用 `skill_list` 看全部）。
+
+## 自动注入（autoInject）
+
+为什么是「随请求」而不是「启动时缓存」:注入只改写 `llm/request`，不写进 session，
+所以第二轮开始模型就看不到清单了；因此每轮都重新扫描并注入（与 `memory-helper` 的
+`autoRecall` 同一语义）。扫描与 `skill_list` 共用一份实现，**没有启动期缓存**，
+新建的技能下一轮请求就会出现。
+
+注入形态:
+
+```text
+【可用技能】
+可用技能(2 个;需要步骤细节时先 skill_show name=<id>):
+- GitHub Trending 榜单报告 (github-trending-report): 需要抓取并按语言/周期整理 GitHub Trending 榜单……
+- PDF 处理 (pdf-tools): 需要拆分/合并/抽取 PDF 时使用
+```
+
+边界:
+
+- **没有技能时不注入**（避免每轮塞一条空消息）；扫描失败只记日志，不影响模型请求。
+- 只列名称、id 与一行描述，不列目录、不贴正文：正文仍按需 `skill_show`，避免常驻 token。
+- 请求里已经带 `【可用技能】` 标记时跳过，防止同一请求被重复派发时重复插入。
+- 位置在首条 system 之后（与 `context-inject` / `memory-helper` 的注入消息并列）。
+- 需要宿主提供 `ctx.waterfall`；没有时装配期直接报错，不静默降级。
 
 ## 安全边界
 
@@ -91,4 +125,7 @@ ada plan --preset examples/skill/skill.preset.json
 - 头部只解析单行 `key: value`；多行 YAML（`|`/`>` 块）会按字面保留在描述里，不展开。
 - 技能目录名与 frontmatter `name` 不一致时，两者都能用来查找；`id` 始终是目录名。
 - 不做热更新缓存：每次调用都重新扫描，技能少时开销可忽略（上限 200 个目录）。
-- 技能不会自动注入系统提示：只有模型主动 `skill_show` 才会进入上下文，避免常驻 token 成本。
+- 默认不注入；开了 `autoInject` 才把清单带进每轮请求。注入的是**索引**而不是正文——
+  正文只有模型主动 `skill_show` 才会进入上下文。
+- `autoInject` 每轮都会增加一条 system 消息（受 `maxIndex*` 限制）；技能很多时
+  建议保留默认 50 条上限，让模型用 `skill_list` 查全量。

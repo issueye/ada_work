@@ -11,11 +11,13 @@ import (
 	"github.com/issueye/ada_go_v2/platform/kernel"
 	"github.com/issueye/ada_go_v2/platform/loader"
 	"github.com/issueye/ada_go_v2/platform/plugin"
+	"github.com/issueye/ada_go_v2/plugins/seam/llm"
 	"github.com/issueye/ada_go_v2/plugins/seam/tools"
 )
 
 // mountSkillHelper 挂载 seam-tools + fs-local(临时工作区)+ skill-helper(TS)。
-func mountSkillHelper(t *testing.T, workspace string) *tools.Registry {
+// cfg 可选:不给时用清单默认配置(不注入技能清单)。
+func mountSkillHelper(t *testing.T, workspace string, cfg ...map[string]any) (*kernel.App, *tools.Registry) {
 	t.Helper()
 	app := kernel.New(kernel.Options{})
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })
@@ -32,7 +34,11 @@ func mountSkillHelper(t *testing.T, workspace string) *tools.Registry {
 	if err != nil {
 		t.Fatalf("构造 skill-helper 失败: %v", err)
 	}
-	f, err := app.Plugin(p, kernel.NewConfig(nil))
+	var conf map[string]any
+	if len(cfg) > 0 {
+		conf = cfg[0]
+	}
+	f, err := app.Plugin(p, kernel.NewConfig(conf))
 	if err != nil {
 		t.Fatalf("挂载 skill-helper 失败: %v", err)
 	}
@@ -43,7 +49,7 @@ func mountSkillHelper(t *testing.T, workspace string) *tools.Registry {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return raw.(*tools.Registry)
+	return app, raw.(*tools.Registry)
 }
 
 func writeFile(t *testing.T, path, content string) {
@@ -76,7 +82,7 @@ description: 演示如何列出与读取技能
 // TestSkillHelperListAndShow 守住 list/show 的闭环:清单、过滤、正文、附带文件。
 func TestSkillHelperListAndShow(t *testing.T) {
 	ws := skillWorkspace(t)
-	reg := mountSkillHelper(t, ws)
+	_, reg := mountSkillHelper(t, ws)
 
 	res := pluginCall(t, reg, "skill_list", map[string]any{})
 	text := resultText(res)
@@ -121,13 +127,13 @@ func TestSkillHelperListAndShow(t *testing.T) {
 // TestSkillHelperErrors 守住错误路径:未知技能、越界文件、空工作区。
 func TestSkillHelperErrors(t *testing.T) {
 	ws := skillWorkspace(t)
-	reg := mountSkillHelper(t, ws)
+	_, reg := mountSkillHelper(t, ws)
 
 	callSkillExpectError(t, reg, "skill_show", map[string]any{"name": "不存在"}, "可用技能")
 
 	callSkillExpectError(t, reg, "skill_show", map[string]any{"name": "demo", "file": "../secret.txt"}, "相对路径")
 
-	empty := mountSkillHelper(t, t.TempDir())
+	_, empty := mountSkillHelper(t, t.TempDir())
 	res := pluginCall(t, empty, "skill_list", map[string]any{})
 	if got := resultText(res); !strings.Contains(got, "没有技能") {
 		t.Fatalf("空工作区应提示没有技能: %q", got)
@@ -137,7 +143,7 @@ func TestSkillHelperErrors(t *testing.T) {
 // TestSkillHelperScaffold 守住生成:创建目录与 SKILL.md、不覆盖、生成后可被 list 看到。
 func TestSkillHelperScaffold(t *testing.T) {
 	ws := t.TempDir()
-	reg := mountSkillHelper(t, ws)
+	_, reg := mountSkillHelper(t, ws)
 
 	res := pluginCall(t, reg, "skill_scaffold", map[string]any{
 		"name": "PDF tools", "description": "处理 PDF 时使用",
@@ -166,6 +172,68 @@ func TestSkillHelperScaffold(t *testing.T) {
 	}
 
 	callSkillExpectError(t, reg, "skill_scaffold", map[string]any{"name": "PDF tools"}, "已存在")
+}
+
+// TestSkillHelperAutoInject 守住 autoInject:打开后每轮请求都带技能清单,
+// 关闭时保持原样;清单里已有标记时不重复注入。
+func TestSkillHelperAutoInject(t *testing.T) {
+	ws := skillWorkspace(t)
+	app, _ := mountSkillHelper(t, ws, map[string]any{"autoInject": true, "maxDescRune": 60})
+
+	request := func(extra ...llm.Message) *llm.Request {
+		msgs := []llm.Message{
+			{Role: llm.RoleSystem, Content: []llm.Block{{Kind: llm.BlockText, Text: "你是助手"}}},
+			{Role: llm.RoleUser, Content: []llm.Block{{Kind: llm.BlockText, Text: "看看 github 榜单"}}},
+		}
+		msgs = append(msgs, extra...)
+		return &llm.Request{Model: "replay", Messages: msgs}
+	}
+
+	got, err := app.Root().Waterfall(context.Background(), llm.EventRequest, request())
+	if err != nil {
+		t.Fatalf("waterfall 失败: %v", err)
+	}
+	req, ok := got.(*llm.Request)
+	if !ok {
+		t.Fatalf("返回值应还原成 *llm.Request,实际 %T", got)
+	}
+	if len(req.Messages) != 3 {
+		t.Fatalf("应注入 1 条技能清单,实际 %d 条: %+v", len(req.Messages), req.Messages)
+	}
+	injected := req.Messages[1]
+	if injected.Role != llm.RoleSystem {
+		t.Fatalf("注入消息应是 system: %+v", injected)
+	}
+	text := injected.Text()
+	if !strings.Contains(text, "【可用技能】") || !strings.Contains(text, "演示技能 (demo)") {
+		t.Fatalf("清单缺少技能条目: %q", text)
+	}
+	if !strings.Contains(text, "演示如何列出与读取技能") {
+		t.Fatalf("清单应带一行描述: %q", text)
+	}
+
+	// 已有标记:同一请求被重复派发时不重复插入。
+	already := request(llm.Message{
+		Role:    llm.RoleSystem,
+		Content: []llm.Block{{Kind: llm.BlockText, Text: "【可用技能】\n(旧清单)"}},
+	})
+	got, err = app.Root().Waterfall(context.Background(), llm.EventRequest, already)
+	if err != nil {
+		t.Fatalf("waterfall 失败: %v", err)
+	}
+	if n := len(got.(*llm.Request).Messages); n != 3 {
+		t.Fatalf("已带清单时不应重复注入,实际 %d 条", n)
+	}
+
+	// 关闭 autoInject:不加消息。
+	appOff, _ := mountSkillHelper(t, ws)
+	got, err = appOff.Root().Waterfall(context.Background(), llm.EventRequest, request())
+	if err != nil {
+		t.Fatalf("waterfall 失败: %v", err)
+	}
+	if n := len(got.(*llm.Request).Messages); n != 2 {
+		t.Fatalf("未开 autoInject 时不应注入,实际 %d 条", n)
+	}
 }
 
 func callSkillExpectError(t *testing.T, reg *tools.Registry, name string, args map[string]any, want string) {

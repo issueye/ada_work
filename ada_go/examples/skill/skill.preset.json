@@ -29,6 +29,9 @@
     "session-jsonl"
   ],
   "patch": {
+    "skill-helper": {
+      "autoInject": true
+    },
     "agent-loop": {
       "model": "replay"
     },
