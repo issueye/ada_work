@@ -16,7 +16,10 @@ param(
     [string]$LLMModel = "",
     [switch]$SkipBuild,
     [switch]$NoZip,
-    [switch]$StripDebug
+    [switch]$StripDebug,
+    # 把同一仓库里的桌面宿主 ../ada_chat 一并编译进 bin/。
+    # 默认关闭:只发 agent 运行时不需要它;桌面产品用 -IncludeChat 一次打齐。
+    [switch]$IncludeChat
 )
 
 $ErrorActionPreference = "Stop"
@@ -86,6 +89,51 @@ try {
         $exe = Join-Path $binDir ($cmd + $ext)
         if (-not (Test-Path $exe)) {
             throw "缺少二进制: $exe"
+        }
+    }
+
+    # 桌面宿主(独立 Go 模块 ../ada_chat)按需编译进同一个 bin/:
+    # 它是 ACP 客户端,启动 bin/ada$ext 并读 presets/acp-release.preset.json。
+    $chatName = "ada_chat" + $ext
+    if ($IncludeChat) {
+        $chatRoot = Join-Path (Split-Path -Parent $root) "ada_chat"
+        if (-not (Test-Path (Join-Path $chatRoot "go.mod"))) {
+            throw "-IncludeChat 需要同仓库的桌面宿主: $chatRoot"
+        }
+        $chatExe = Join-Path $binDir $chatName
+        if ($SkipBuild) {
+            if (-not (Test-Path $chatExe)) {
+                throw "-SkipBuild 且 -IncludeChat 要求已有 $chatExe"
+            }
+        } else {
+            # 与 ada_chat/build.bat 同一组发布参数:GUI 子系统只在 Windows 目标成立,
+            # 其它平台用普通控制台子系统,避免链接器拒绝 -H=windowsgui。
+            $chatLd = if ($goosValue -eq "windows") {
+                "-s -w -H=windowsgui -X github.com/egoist/mygo.production=1"
+            } else {
+                "-s -w -X github.com/egoist/mygo.production=1"
+            }
+            Write-Host "build ada_chat -> $chatExe ($goosValue/$goarchValue)"
+            Push-Location $chatRoot
+            $oldChatGOOS = $env:GOOS
+            $oldChatGOARCH = $env:GOARCH
+            $oldChatCGO = $env:CGO_ENABLED
+            $env:GOOS = $goosValue
+            $env:GOARCH = $goarchValue
+            $env:CGO_ENABLED = "0"
+            try {
+                & go build -trimpath -tags mygo_noinspector -ldflags $chatLd -o $chatExe ./cmd/ada_chat
+                if ($LASTEXITCODE -ne 0) {
+                    throw "编译 ada_chat 失败(exit $LASTEXITCODE)"
+                }
+            } finally {
+                $env:GOOS = $oldChatGOOS
+                $env:GOARCH = $oldChatGOARCH
+                $env:CGO_ENABLED = $oldChatCGO
+                Pop-Location
+            }
+            $size = (Get-Item $chatExe).Length
+            Write-Host ("  产物 {0:N2} MB" -f ($size / 1MB))
         }
     }
 
@@ -308,6 +356,19 @@ try {
     }
 
     $binNames = @(Get-ChildItem $binDir -File | Select-Object -ExpandProperty Name)
+    $chatSection = if ($IncludeChat) {
+        @"
+
+桌面宿主 ada_chat$ext 已随包发布:
+  在「设置 → Agent」里把 Agent 路径指向 bin/ada$ext,
+  Agent preset 指向 presets/acp-release.preset.json;
+  也可先用环境变量启动:
+    `$env:ADA_BOT_RUNTIME = "<包根>/bin/ada$ext"
+    `$env:ADA_GO_AGENT_PRESET = "<包根>/presets/acp-release.preset.json"
+    bin/ada_chat$ext
+  机器人进程的 cwd 是所选工作目录,preset 里的相对路径按包根解析(.ada-base)。
+"@
+    } else { "" }
     $readme = @"
 Ada 发布包 $pkgName
 
@@ -322,8 +383,9 @@ presets/ 只引用 ../plugins、workspace/ 与 data/,不包含开发目录路径
 真实端点可用 LLMEndpoint/LLMModel 参数生成 agent-real-release.preset.json。
 
 环境变量:把 .env.example 复制为 .env 填写(API key 等),启动时补进环境;
-真实环境变量优先,文件内容不写日志。从包根运行 `ada`(含 `ada acp`)时读当前目录的 .env。
+真实环境变量优先,文件内容不写日志。从包根运行 ada(含 ada acp)时读当前目录的 .env。
 写法见源码仓库 docs/env-file.md。
+$chatSection
 "@
     [System.IO.File]::WriteAllText((Join-Path $pkg "README.txt"), ($readme.TrimEnd() + "`n"), $utf8)
     $envExample = @"
